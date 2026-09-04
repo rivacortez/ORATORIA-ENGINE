@@ -41,6 +41,10 @@ jobs:
           # to a branch. This repository pushes to main constantly, so caching
           # there is exactly where the time is saved.
           enable-cache: true
+          # A suffix per job. Both jobs install the same dependencies and would
+          # otherwise race for one cache key: whichever finishes second cannot
+          # reserve it and logs a failure that reads like a problem and is not.
+          cache-suffix: battery
 
       - name: Install
         # `uv sync` into a project venv, not `uv pip install --system`. The
@@ -132,6 +136,9 @@ jobs:
           # to a branch. This repository pushes to main constantly, so caching
           # there is exactly where the time is saved.
           enable-cache: true
+          # See the note in `battery`: distinct keys keep the two jobs from
+          # racing for one cache reservation.
+          cache-suffix: integration
 
       - name: Start MinIO
         # A step rather than a service container. The official `minio/minio`
