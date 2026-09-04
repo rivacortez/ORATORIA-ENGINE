@@ -38,7 +38,9 @@ export TERM=dumb
   echo "Branch:         $(git rev-parse --abbrev-ref HEAD)"
   # A dirty tree makes the commit hash a lie about what actually ran, so it
   # is reported rather than assumed away.
-  echo "Tree state:     $(git status --porcelain | wc -l) uncommitted file(s)"
+  # Excludes docs/evidence: this file is being written by `tee` right now,
+  # so counting it would report every clean capture as dirty.
+  echo "Tree state:     $(git status --porcelain -- . ':!docs/evidence' | wc -l) uncommitted file(s) outside docs/evidence"
   echo "Python:         $(python --version 2>&1)"
   echo "Database:       ${DATABASE_URL%%://*}://... (credentials redacted)"
   echo
@@ -48,15 +50,15 @@ export TERM=dumb
   echo
 
   echo "=== ruff check ==="
-  uv run ruff check --no-cache --output-format concise src tests scripts
+  uv run ruff check --no-cache --color never --output-format concise src tests scripts
   echo
 
   echo "=== ruff format --check ==="
-  uv run ruff format --check src tests scripts
+  uv run ruff format --check --color never src tests scripts
   echo
 
   echo "=== mypy --strict ==="
-  uv run mypy
+  uv run mypy --no-color-output
   echo
 
   echo "=== import-linter ==="
