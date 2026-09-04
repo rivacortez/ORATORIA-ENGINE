@@ -1,6 +1,9 @@
 # Frozen baseline pins
 
 **Status:** models and configuration frozen, 2026-09-04.
+**Revised 2026-09-04:** the verbatim baseline was re-pinned from CrisperWhisper
+v1 to 2.0. v1 is English/German-only by its own card, so it could not be the
+comparator for an `es-PE` corpus. See "Why this replaces the v1 pin".
 **Outputs:** not frozen. See "Two things get frozen" below — the held-out set
 does not exist yet.
 **Phase 0 deliverable (§13).**
@@ -32,13 +35,26 @@ is only meaningful if the baseline was chosen and fixed _before_ anyone saw the
 test results — a baseline selected afterwards is selected, consciously or not,
 to be beatable.
 
-A model name is not a pin. **This project has already been bitten by exactly
-that:** `BASELINES.md` names CrisperWhisper, and between the specification
+A model name is not a pin. **This project has been bitten by exactly that,
+twice, on the same model.**
+
+First: `BASELINES.md` names "CrisperWhisper", and between the specification
 being written and these pins being taken, the publisher moved the repository
 from `nyrahealth/CrisperWhisper` to `nyralabs/CrisperWhisper` (the old path now
-answers with a 307) and published a `CrisperWhisper2.0_large` alongside it,
-with different weights, a different dtype and a different loading library.
-"CrisperWhisper" now names three artifacts. The revision below names one.
+answers with a 307) and published `CrisperWhisper2.0_large` alongside it, with
+different weights, a different dtype, a different tokenizer and a different
+loading library. The name now points at three artifacts.
+
+Second, and worse: the first version of this file resolved that ambiguity in
+the wrong direction. It pinned v1 — a model whose own card says it is
+English/German-only — as the verbatim comparator for a Peruvian Spanish corpus,
+and argued for the choice on the grounds of not swapping baselines mid-project.
+The argument was sound and the premise was not checked. A pin is only as good
+as the reading of the model card that produced it.
+
+Both failures are recorded rather than quietly corrected, because "we pinned
+the wrong model and caught it in review" is the evidence that the pinning
+discipline works.
 
 ---
 
@@ -91,42 +107,122 @@ model on word boundaries is not a comparison. `whisper-large-v3` ships
 alignment heads, so word timestamps are available from the checkpoint itself
 with no extra component to pin.
 
-## CrisperWhisper
+## CrisperWhisper 2.0 — the verbatim baseline
 
-| Field                          | Value                                                                                                                                           |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model identifier               | `nyralabs/CrisperWhisper`                                                                                                                       |
-| Previous identifier            | `nyrahealth/CrisperWhisper` — moved, now redirects (307)                                                                                        |
-| Hub revision (commit sha)      | `5a513ffabb3429bb61da3521c4e24fbd33ec3e7c`                                                                                                      |
-| Artifact pinned                | `model.safetensors`                                                                                                                             |
-| Weights digest (sha256)        | `ab370a321fa94ce08d419959813540a4f9b0239b88b2f4207ae28ef6607083c0`                                                                              |
-| Artifact size (bytes)          | `3219908024`                                                                                                                                    |
-| Parameter count                | 1 609 879 040                                                                                                                                   |
-| Quantisation                   | fp16 as published (`F16` for all parameters; `torch_dtype: float16`)                                                                            |
-| Architecture                   | `whisper`, 32 encoder / 32 decoder layers, `d_model` 1280, 128 mel bins                                                                         |
-| Feature extraction             | 16 kHz, 30 s chunks, `n_fft` 400, `hop_length` 160, 128 mel bins                                                                                |
-| Published under `transformers` | 4.37.2                                                                                                                                          |
-| Repository last modified       | 2026-07-22T12:07:48Z                                                                                                                            |
-| Inference library and version  | `transformers` — version pinned at Phase 3                                                                                                      |
-| Decoding configuration         | as Whisper above, with the checkpoint's own `suppress_tokens` (6 745 entries) and `forced_decoder_ids` `[[1, None], [2, 50360]]` left untouched |
-| Timestamp granularity          | **word**, via the checkpoint's 10 published alignment heads                                                                                     |
+| Field | Value |
+| --- | --- |
+| Model identifier | `nyralabs/CrisperWhisper2.0_large` |
+| Hub revision (commit sha) | `f4334f6e8193f2691212d49b20fa12d370e13896` |
+| Artifact pinned | `model.safetensors` |
+| Weights digest (sha256) | `f097f853b6992e66fcae802a15770a8242670351198d68dad577db3209fe3fcc` |
+| Artifact size (bytes) | `3086843114` |
+| Parameter count | 1 543 345 921 |
+| Quantisation | bf16 as published (`BF16` for all parameters) |
+| Architecture | `whisper`, 32 encoder / 32 decoder layers, `d_model` 1280, 80 mel bins, vocab 51 896 |
+| Published under `transformers` | 4.57.6 |
+| Repository last modified | 2026-08-13T15:51:53Z |
+| Inference library | `crisperwhisper` **2.0.2** (PyPI) — not `transformers`; the repo declares `library_name: crisperwhisper` |
+| Backend | `ct2` — `pip install "crisperwhisper[ct2]"`, converted once on first load. The `transformers` extra is the fallback if ct2 conversion is unavailable on the pilot host, and which one produced a figure is recorded with it |
+| Entry point | `from crisperwhisper import CrisperWhisperModel` |
+| Decoding: mode | **`mode="verbatim"`** — the default, and the entire reason this model is here. `mode="intended"` is the clean-transcript mode and must never produce a baseline figure |
+| Decoding: language | **forced** to `es` |
+| Decoding: word timestamps | `word_timestamps=True` |
+| Hallucination mitigation | on by default (detects and suppresses Whisper's looping-repetition failure). Left on, and recorded, because it is a decoding intervention |
+| Deliberately not used | `transcribe_dual`, `verbatimize`, and the `Pro` tier — each changes what is being measured |
+| Licence — software | MIT (inference code, pre- and post-processing) |
+| Licence — weights **and outputs** | nyra health Non-Commercial Research Licence |
 
-> **`CrisperWhisper2.0_large` is deliberately not the pin.** It exists
-> (`f4334f6e8193f2691212d49b20fa12d370e13896`, BF16, loaded through a
-> `crisperwhisper` library rather than `transformers`) and is newer. It is not
-> the model the published work describes, it needs a different loading path,
-> and swapping the baseline for a newer one mid-project is how a comparison
-> stops being reproducible. If it is adopted later, it is adopted as a
-> _second_ pinned baseline with its own row, not as an update to this one.
+> **A licence note that reaches the thesis, not just the repo.** The split
+> licence puts the model *Outputs* under the non-commercial term, and the
+> frozen baseline outputs over the held-out set are Outputs. Thesis and
+> research use sit inside the term; any later commercial use of this engine
+> needs either a licence from nyra health or a comparison regenerated without
+> this baseline. Recorded now because it is cheap now and expensive later.
 
-### Why CrisperWhisper is the baseline that matters
+### Why this replaces the v1 pin
 
-Whisper is the general reference; CrisperWhisper is the hard one. It was
-trained specifically to transcribe verbatim — to keep the filled pauses,
-repetitions and false starts that Whisper's training data taught it to remove.
-NFR-001's claim is only interesting against a baseline that is already trying
-to do the thing: beating vanilla Whisper at disfluency detection would mostly
-be reporting that Whisper deletes disfluencies.
+The first version of this file pinned `nyralabs/CrisperWhisper` (v1). That was
+wrong, and v1's own card says why: **"CrisperWhisper 1.0 is
+English/German-only"**, `language: ['de', 'en']` in the metadata, and every
+cited benchmark English (AMI IHM, TED-LIUM, TIMIT). Pinning it as the verbatim
+comparator for an `es-PE` corpus meant pinning a model that does not claim to
+do the task.
+
+2.0 is a different proposition: multilingual, with verbatim/intended style
+control, word timestamps, and a published disfluency-F1 leaderboard across ten
+languages.
+
+| System | Disfluency F1 (10-language average) |
+| --- | ---: |
+| CrisperWhisper 2.0 Pro | 93.5 |
+| **CrisperWhisper 2.0** | **87.8** |
+| ElevenLabs Scribe v2 | 79.2 |
+| Microsoft MAI-Transcribe-1.5 | 77.5 |
+| CrisperWhisper 1.0\* | 64.8 |
+| Deepgram Nova-3 | 37.8 |
+
+<sub>\* en/de only. Source: the Nyra Verbatim Speech Benchmark table in the
+model card, read at revision `f4334f6e`.</sub>
+
+**This raises the bar the project's own model has to clear**, which is the
+honest consequence of pinning the right baseline. NFR-001 has to be read
+against 87.8, not against the 64.8 the wrong pin would have implied.
+
+### The caveat that does not go away
+
+The card states that **English and German use human-labelled evaluation sets;
+the other eight languages use synthetic verbatim sets.** The published Spanish
+figure is therefore against synthetic data.
+
+That does not make it a bad baseline. It makes the Peruvian evaluation
+mandatory rather than courteous, and it is worth being precise about why:
+support for Spanish is not evidence of performance on Peruvian Spanish
+disfluencies, and a synthetic verbatim set is not evidence about spontaneous
+speech at all. As far as this pin's own benchmark goes, the OratorIA corpus
+will be the first human-labelled verbatim `es-PE` measurement of this model.
+
+**Required before any NFR-001 comparison is reported:** run this baseline over
+a held-out slice of the human-annotated Peruvian corpus and report its
+per-class figures on the same matching rule the inter-annotator agreement uses
+(`corpus.agreement.matching`), so the human ceiling, the baseline and the
+project model land on one scale. If it underperforms there relative to its
+published average, that is a finding about transfer and is reported as one —
+not quietly banked as margin for the project model.
+
+### v1, retained as a historical pin only
+
+| Field | Value |
+| --- | --- |
+| Model identifier | `nyralabs/CrisperWhisper` |
+| Previous identifier | `nyrahealth/CrisperWhisper` — moved, now redirects (307) |
+| Hub revision | `5a513ffabb3429bb61da3521c4e24fbd33ec3e7c` |
+| Weights digest (sha256) | `ab370a321fa94ce08d419959813540a4f9b0239b88b2f4207ae28ef6607083c0` |
+| Parameter count | 1 609 879 040, fp16 |
+| Languages | **English and German only**, per its own card |
+| Licence | CC-BY-NC-4.0 |
+| Status | **Not a comparator for this thesis.** Kept pinned so the INTERSPEECH 2024 result can be cited against the exact artifact it describes, and so the record of what was pinned first survives |
+
+### Why a verbatim baseline is the one that matters
+
+Whisper is the general reference; the verbatim model is the hard one. It is
+built to keep the filled pauses, repetitions and false starts that Whisper's
+training data taught it to remove. NFR-001's claim is only interesting against
+a baseline already trying to do the task: beating vanilla Whisper at disfluency
+detection would mostly be reporting that Whisper deletes disfluencies.
+
+### On the absence of a Spanish-native verbatim baseline
+
+Searched the Hub for one before settling on transfer from a multilingual model.
+What exists: Common Voice fine-tunes of Whisper for Spanish, optimised for
+*clean* transcription and therefore the opposite of what is needed; and a
+handful of `disfluency-spanish` checkpoints with single-digit download counts,
+no paper and no documented provenance. Pinning one of those as a scientific
+comparator would be worse than having none.
+
+Recorded as a null result rather than left implicit, because "there is no
+published verbatim-Spanish ASR baseline" is part of the argument for this
+thesis existing, and a reader is entitled to know it was checked rather than
+assumed.
 
 ## Reproducible environment
 
@@ -157,10 +253,22 @@ Nothing here has to be taken on trust:
 ```sh
 # Revision and metadata
 curl -sL "https://huggingface.co/api/models/openai/whisper-large-v3" | jq .sha
+curl -sL "https://huggingface.co/api/models/nyralabs/CrisperWhisper2.0_large" | jq .sha
 
 # Weights digest, from the git-lfs pointer at that exact revision
 curl -sL "https://huggingface.co/openai/whisper-large-v3/raw/06f233fe06e710322aca913c1bc4249a0d71fce1/model.safetensors"
 # -> oid sha256:a8e94b85976e5864ba3e9525c7e6c83b2a1eca42d4b797a0c7c24d778e40fd95
+
+curl -sL "https://huggingface.co/nyralabs/CrisperWhisper2.0_large/raw/f4334f6e8193f2691212d49b20fa12d370e13896/model.safetensors"
+# -> oid sha256:f097f853b6992e66fcae802a15770a8242670351198d68dad577db3209fe3fcc
+
+# The language claim, which is what the v1 pin got wrong
+curl -sL "https://huggingface.co/api/models/nyralabs/CrisperWhisper" | jq .cardData.language
+# -> ["de","en"]
+
+# The inference library, which is not transformers for 2.0
+curl -s "https://pypi.org/pypi/crisperwhisper/json" | jq -r .info.version
+# -> 2.0.2
 
 # And after downloading, that the bytes on disk are those bytes
 sha256sum model.safetensors
@@ -179,3 +287,9 @@ comparator becomes the thing serving traffic. The engine's runtime selection is
 `ENGINE_RUNTIME_MODE`, which today accepts `deterministic` and refuses
 `managed` with a NotImplementedError; when the managed path lands, a baseline
 must not be reachable through it.
+
+There is now a second reason, and it is not a matter of taste. Both verbatim
+checkpoints are licensed for **non-commercial research use only** — v1 under
+CC-BY-NC-4.0, 2.0 under the nyra health Non-Commercial Research Licence, which
+extends to the model's Outputs. A "temporary" wiring that reaches production
+is a licence breach, not just an architectural smell.

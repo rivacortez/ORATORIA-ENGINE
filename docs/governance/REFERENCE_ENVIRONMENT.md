@@ -54,9 +54,9 @@ part of the data" below.
 | Network to the client         | n/a — annotation is local, no client/server hop                      |
 
 > **8 GB of VRAM is a constraint worth noticing now.** `whisper-large-v3` in
-> fp16 is 3.1 GB of weights and CrisperWhisper 3.2 GB, so either fits alone
-> with room for activations — but not both resident at once alongside a visual
-> model. Whatever Phase 3 does about that is a design decision, and it is
+> fp16 is 3.09 GB of weights and CrisperWhisper 2.0 in bf16 3.09 GB, so either
+> fits alone with room for activations — but not both resident at once
+> alongside a visual model. Whatever Phase 3 does about that is a design decision, and it is
 > better made before a benchmark is written than after one fails.
 
 ## Pilot inference host
@@ -87,20 +87,43 @@ carry a number until this table is filled from the machine that produced it.
 
 ## Capture devices
 
-Capture hardware is part of the measurement, not context. FR-020's quality
-gates and the visual indicators are relative to what the camera can see, and a
-webcam's low-light behaviour changes the availability rate of every visual
-indicator.
+Capture hardware is part of the measurement, not context around it.
 
-| Field                                      | Value                                                                                                                         |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| Microphone model                           | Realtek(R) Audio — onboard array (laptop built-in)                                                                            |
-| Microphone placement                       | laptop built-in                                                                                                               |
-| Sample rate and bit depth as captured      | **to be pinned by the operator before Pilot A** — target 16 kHz / 16-bit PCM mono, matching both baselines' feature extractor |
-| Camera model                               | "Integrated Camera", USB `VID_5986&PID_2175` (Bison/Acer module)                                                              |
-| Camera resolution and frame rate           | **not measured** — recorded at Phase 5, when visual events are annotated                                                      |
-| Camera position relative to eye level      | below eye level (laptop lid)                                                                                                  |
-| Room lighting (approximate lux, direction) | **not measured** — needs a light meter; the operator records it at Pilot A                                                    |
+**Audio and video are gated separately, and the split is not cosmetic.** Pilot A
+and Pilot B are speech-only (see the scope section of `PILOT_PROTOCOL.md`), so
+the audio rows below block them and the camera rows do not. A visual value left
+unmeasured cannot hold up a pilot that never shows an annotator a video frame.
+
+### Audio — blocks Pilot A
+
+| Field | Value |
+| --- | --- |
+| Microphone model | Realtek(R) Audio — onboard array (laptop built-in) |
+| Microphone placement | laptop built-in |
+| Physical device confirmed for capture | **operator confirms before Pilot A** |
+| Sample rate and bit depth as captured | **operator pins before Pilot A** — target 16 kHz / 16-bit PCM, matching both baselines' feature extractor |
+| Channels | mono |
+| Virtual audio chains bypassed | **operator confirms before Pilot A** — see below |
+
+Four things, all of them checkable in a minute, and Pilot A can start:
+
+- [ ] Recording from the named physical microphone, not a virtual endpoint.
+- [ ] Mono PCM.
+- [ ] Sample rate and bit depth declared and written down here.
+- [ ] NVIDIA Broadcast and Voicemeeter out of the path.
+
+Confirmed by inspecting the **recorded file** — its sample rate, channel count
+and duration — not by reading a settings dialog. A settings dialog reports what
+was requested; the file reports what happened.
+
+### Video — blocks the visual pilot, Phase 5
+
+| Field | Value |
+| --- | --- |
+| Camera model | "Integrated Camera", USB `VID_5986&PID_2175` (Bison/Acer module) |
+| Camera resolution and frame rate | _not measured — Phase 5_ |
+| Camera position relative to eye level | below eye level (laptop lid) |
+| Room lighting (approximate lux, direction) | _not measured — Phase 5; needs a light meter_ |
 
 > Camera position matters more than it looks. A laptop camera below eye level
 > makes every speaker's gaze read as downward against an absolute reference,
