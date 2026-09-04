@@ -65,3 +65,77 @@ jobs:
         # Called out as its own step so a failure names the phase it blocks
         # rather than appearing as one red dot among a hundred.
         run: pytest tests/contract -q
+
+  integration:
+    # The persistent adapters, against the real thing. Separate from `battery`
+    # because it needs infrastructure, and because a failure here means
+    # something different: the contracts still hold, but an adapter does not
+    # implement them. The three bugs this job exists to catch - a missing
+    # foreign-key parent, a partial unique index violated by flush ordering,
+    # and missing object-store credentials - were all invisible in memory.
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: engine
+          POSTGRES_PASSWORD: engine
+          POSTGRES_DB: engine
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U engine -d engine"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: engine
+          MINIO_ROOT_PASSWORD: engine-secret
+          MINIO_DEFAULT_BUCKETS: evidence-engine
+        ports: ["9000:9000"]
+
+    env:
+      ENGINE_TEST_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
+      ENGINE_TEST_REDIS_URL: redis://localhost:6379/1
+      ENGINE_TEST_S3_ENDPOINT: http://localhost:9000
+      ENGINE_TEST_S3_ACCESS_KEY: engine
+      ENGINE_TEST_S3_SECRET_KEY: engine-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Migrate
+        # Running the migration here rather than creating tables from the
+        # models is deliberate: this is the only place the migration is
+        # exercised end to end before a deployment relies on it.
+        env:
+          ENGINE_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
+        run: alembic upgrade head
+
+      - name: Migration round-trip
+        # up -> down -> up. A migration that cannot be reversed is a deployment
+        # that cannot be rolled back, and the first time that matters is the
+        # worst time to discover it.
+        env:
+          ENGINE_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Integration tests
+        run: pytest -m integration
