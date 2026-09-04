@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from corpus.schema.records import (
+    SCHEMA_VERSION,
     AnnotatedRecording,
     AnnotationPass,
     DisfluencyAnnotation,
@@ -62,6 +63,11 @@ PROP_SPEAKER = "speaker_pseudonym"
 PROP_PASS = "annotation_pass"
 PROP_TAXONOMY = "taxonomy_version"
 PROP_RECORDING = "recording_id"
+#: The record shape the file was written under. Both versions are stored, and
+#: both are needed: the taxonomy version says what the *classes* meant, the
+#: schema version says what the *file* means. A corpus assembled across a
+#: schema change without this is a set of files that look alike and are not.
+PROP_SCHEMA = "schema_version"
 
 _CV_DISFLUENCY = "disfluency_classes"
 _CV_ROLE = "contextual_roles"
@@ -100,8 +106,14 @@ def read(path: Path) -> AnnotatedRecording:
 
     root = tree.getroot()
     properties = _properties(root)
-    slots = _time_slots(root)
 
+    # Before anything is interpreted. Every step below reads the tiers under
+    # this version's rules, so a file written under a shape this tool does not
+    # know has to be turned away here - otherwise it fails somewhere deeper
+    # with a message about time slots, and the schema never gets mentioned.
+    schema_version = _required_schema_version(properties, path)
+
+    slots = _time_slots(root)
     annotator_id = _required_property(properties, PROP_ANNOTATOR, path)
     recording_id = properties.get(PROP_RECORDING) or path.stem
 
@@ -129,8 +141,36 @@ def read(path: Path) -> AnnotatedRecording:
         duration_ms=duration_ms,
         words=words,
         disfluencies=disfluencies,
+        schema_version=schema_version,
         taxonomy_version=_parse_version(properties.get(PROP_TAXONOMY)),
     )
+
+
+def _required_schema_version(properties: dict[str, str], path: Path) -> SemanticVersion:
+    """The record shape this file was written under. Required, and checked.
+
+    Required rather than defaulted, because a default is a guess: assuming the
+    current version for a file that does not say would let a file written under
+    a future shape be read as if it were this one, and the failure would appear
+    as an agreement figure rather than as an error.
+
+    Checked to one major version, the compatibility rule the rest of the system
+    uses (NFR-017). A minor-version difference is additive by definition and
+    reads fine; a major one is a different record.
+    """
+    raw = _required_property(properties, PROP_SCHEMA, path)
+    try:
+        version = SemanticVersion.parse(raw)
+    except Exception as error:
+        raise ElanError(f"{path.name}: '{raw}' is not a schema version") from error
+
+    if not version.is_compatible_with(SCHEMA_VERSION):
+        raise ElanError(
+            f"{path.name} was written under schema {version}; this tool reads "
+            f"{SCHEMA_VERSION}. Reading it anyway would compare two different record "
+            "shapes and report the difference as annotator disagreement."
+        )
+    return version
 
 
 def _to_disfluency(
@@ -277,6 +317,10 @@ def _parse_version(raw: str | None) -> SemanticVersion | None:
 # ---------------------------------------------------------------------------
 
 
+class WouldOverwrite(ElanError):
+    """Writing here would destroy an existing file."""
+
+
 def write_template(
     path: Path,
     *,
@@ -285,6 +329,7 @@ def write_template(
     annotator_id: str,
     media_url: str,
     annotation_pass: AnnotationPass = AnnotationPass.FIRST,
+    overwrite: bool = False,
 ) -> None:
     """Write an empty EAF wired with the taxonomy as controlled vocabularies.
 
@@ -293,7 +338,19 @@ def write_template(
     allowlist and sees its Spanish definition as the entry description — so the
     manual and the tool cannot disagree, and a class that is not published
     cannot be typed.
+
+    Refuses to overwrite unless asked. An empty template and a finished
+    annotation are the same kind of file with the same natural name, so
+    regenerating a template over a day of somebody's work is one mistyped path
+    away and there is nothing to recover it from.
     """
+    if path.exists() and not overwrite:
+        raise WouldOverwrite(
+            f"{path} already exists. A finished annotation and an empty template are "
+            "the same kind of file, and this would replace one with the other. Pass "
+            "--force if that is what you meant."
+        )
+
     document = ET.Element(
         "ANNOTATION_DOCUMENT",
         {
@@ -316,6 +373,7 @@ def write_template(
         (PROP_SPEAKER, speaker_pseudonym),
         (PROP_ANNOTATOR, annotator_id),
         (PROP_PASS, annotation_pass.value),
+        (PROP_SCHEMA, str(SCHEMA_VERSION)),
         (PROP_TAXONOMY, str(TAXONOMY_VERSION)),
     ):
         ET.SubElement(header, "PROPERTY", {"NAME": name}).text = value

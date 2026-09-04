@@ -25,7 +25,7 @@ sequence alignment — and it is short enough to check by reading.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -43,6 +43,10 @@ DEFAULT_IOU_THRESHOLD = 0.5
 #: to NFR-004's 250 ms boundary target so that the human ceiling and the model
 #: score are measured on the same scale.
 DEFAULT_TOLERANCE_MS = 250
+
+
+class InvalidMatchParameters(Exception):
+    """A matching parameter would make the result uninterpretable."""
 
 
 class MatchCriterion(StrEnum):
@@ -126,12 +130,26 @@ def match(
     would make a class disagreement indistinguishable from a missed event —
     which is the distinction the pilot most needs, because the two have
     completely different fixes.
+
+    Symmetric: ``match(a, b)`` and ``match(b, a)`` produce the same set of
+    pairs. That is not automatic - the dynamic program can reach several
+    equally-optimal matchings, and a tie-break that prefers "the left side"
+    would silently produce a different confusion matrix and different boundary
+    errors depending on which annotator's file was passed first.
     """
+    _require_valid_parameters(criterion, iou_threshold, tolerance_ms)
+
     ordered_left = _ordered(left)
     ordered_right = _ordered(right)
 
     weights = _weights(ordered_left, ordered_right, criterion, iou_threshold, tolerance_ms)
-    indices = _optimal_non_crossing(weights, len(ordered_left), len(ordered_right))
+
+    def prefer_skipping_left(i: int, j: int) -> bool:
+        return _content_key(ordered_left[i]) > _content_key(ordered_right[j])
+
+    indices = _optimal_non_crossing(
+        weights, len(ordered_left), len(ordered_right), prefer_skipping_left
+    )
 
     pairs = tuple(
         MatchedPair(
@@ -153,19 +171,60 @@ def match(
     )
 
 
+def _require_valid_parameters(
+    criterion: MatchCriterion, iou_threshold: float, tolerance_ms: int
+) -> None:
+    """Refuse parameters that produce a number nobody can read.
+
+    An IoU threshold of 0 matches every pair that touches at all, including a
+    200 ms annotation with a 3 s one; above 1 it matches nothing and every
+    report reads as total disagreement. A negative tolerance is the same
+    failure written differently. All of them are silent: the report renders,
+    the coefficients compute, and the numbers mean nothing.
+    """
+    if not 0.0 <= iou_threshold <= 1.0:
+        raise InvalidMatchParameters(
+            f"IoU threshold must lie in [0, 1], got {iou_threshold}. Below 0 every "
+            "touching pair matches; above 1 nothing does, and the report reads as "
+            "total disagreement either way."
+        )
+    if tolerance_ms < 0:
+        raise InvalidMatchParameters(f"tolerance must be non-negative, got {tolerance_ms} ms")
+    if criterion is MatchCriterion.IOU and iou_threshold == 0.0:
+        raise InvalidMatchParameters(
+            "an IoU threshold of 0 matches any pair that touches at all, including a "
+            "200 ms annotation with a 3 s one - which is the pair a boundary-error "
+            "statistic most needs to separate. Choose a threshold deliberately."
+        )
+
+
+def _content_key(annotation: DisfluencyAnnotation) -> tuple[int, int, str, str, str]:
+    """A total order over annotations, derived only from their content.
+
+    Used wherever a tie has to be broken. Because it depends on the annotation
+    and not on which side it arrived from, the same tie resolves the same way
+    whichever annotator is passed first - which is what makes the matching
+    symmetric.
+    """
+    return (
+        annotation.interval.start_ms,
+        annotation.interval.end_ms,
+        annotation.event_type.value,
+        annotation.raw_text,
+        annotation.annotator_id,
+    )
+
+
 def _ordered(
     annotations: Sequence[DisfluencyAnnotation],
 ) -> list[DisfluencyAnnotation]:
-    """Temporal order, with deterministic tie-breaking.
+    """Temporal order, with a total tie-break.
 
-    The tie-break matters: two annotations starting at the same millisecond
-    would otherwise be ordered by whatever the file happened to list first, and
-    the matching would differ between two runs over the same data.
+    Two annotations starting at the same millisecond would otherwise be ordered
+    by whatever the file happened to list first, and the matching would differ
+    between two runs over the same data.
     """
-    return sorted(
-        annotations,
-        key=lambda a: (a.interval.start_ms, a.interval.end_ms, a.event_type.value),
-    )
+    return sorted(annotations, key=_content_key)
 
 
 def _weights(
@@ -192,16 +251,23 @@ def _weights(
 
             midpoint_a = (a.interval.start_ms + a.interval.end_ms) / 2
             midpoint_b = (b.interval.start_ms + b.interval.end_ms) / 2
-            if abs(midpoint_a - midpoint_b) <= tolerance_ms:
-                # Scored by IoU even under the tolerance criterion, so that
-                # when a tolerance window admits two candidates the better
-                # overlap wins rather than the earlier one.
-                weights[(i, j)] = a.interval.iou(b.interval)
+            distance = abs(midpoint_a - midpoint_b)
+            if distance <= tolerance_ms:
+                # Closeness first, overlap as a bonus. Scoring by IoU alone was
+                # a bug: two annotations that do not overlap at all score 0,
+                # and a zero-weight pair is never selected by the dynamic
+                # program - so the tolerance criterion silently discarded
+                # exactly the pairs that distinguish it from IoU matching.
+                closeness = 1.0 - distance / (tolerance_ms + 1)
+                weights[(i, j)] = closeness + a.interval.iou(b.interval)
     return weights
 
 
 def _optimal_non_crossing(
-    weights: dict[tuple[int, int], float], n_left: int, n_right: int
+    weights: dict[tuple[int, int], float],
+    n_left: int,
+    n_right: int,
+    prefer_skipping_left: Callable[[int, int], bool],
 ) -> list[tuple[int, int]]:
     """Maximum-weight non-crossing matching, by dynamic programming.
 
@@ -233,7 +299,21 @@ def _optimal_non_crossing(
         if weight is not None and abs(best[i][j] - (best[i - 1][j - 1] + weight)) < 1e-12:
             pairs.append((i - 1, j - 1))
             i, j = i - 1, j - 1
-        elif best[i][j] == best[i - 1][j]:
+            continue
+
+        skip_left = best[i - 1][j]
+        skip_right = best[i][j - 1]
+        if skip_left > skip_right:
+            i -= 1
+        elif skip_right > skip_left:
+            j -= 1
+        elif prefer_skipping_left(i - 1, j - 1):
+            # Equally optimal either way. Broken on the *content* of the two
+            # candidates rather than on which side they came from, so that
+            # match(a, b) and match(b, a) drop the same annotation and produce
+            # the same pairs. A `best[i][j] == best[i-1][j]` tie-break looks
+            # harmless and quietly makes the confusion matrix, the boundary
+            # errors and every per-class figure depend on argument order.
             i -= 1
         else:
             j -= 1

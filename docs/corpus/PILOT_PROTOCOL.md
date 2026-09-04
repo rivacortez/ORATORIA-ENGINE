@@ -27,6 +27,53 @@ re-annotation costs the same as the original.
 So the taxonomy gets closed experimentally first, with a small sample, and the
 manual gets whatever corrections the disagreements demand.
 
+## Scope: the speech taxonomy only
+
+**Phase 0.5 validates the nine speech classes. It says nothing about the nine
+visual ones.** This is a deliberate narrowing, stated here because the phrase
+"each P0 class" below would otherwise be read as covering the whole taxonomy,
+and a reviewer is entitled to know exactly what was measured.
+
+What is in scope: `filled_pause`, `lexical_filler`, `repetition`,
+`false_start`, `self_repair`, `cut_off`, `prolongation`, `silent_pause`,
+`unintelligible`, and the contextual roles attached to the lexical classes.
+
+What is not: `gaze_toward_camera`, `gaze_away_from_camera`,
+`face_visibility_loss`, `insufficient_lighting`, `insufficient_framing`,
+`posture_deviation`, `repetitive_torso_movement`, `self_touch`,
+`repetitive_hand_movement`.
+
+Three reasons, in order of weight.
+
+_The annotation record has no field for them._ `corpus.schema.records` models
+a speech event: an interval, a class, a contextual role, a raw expression, and
+the words tier they are checked against. A visual event has none of those
+relationships and would need a second record shape, a second validator and a
+second set of agreement conventions — a body of work comparable to this whole
+phase.
+
+_Visual agreement is a different measurement._ `insufficient_lighting` is a
+continuous condition, not an event: two annotators marking "the lighting was
+bad" over overlapping stretches are performing unitizing, not detection, and
+the matching here — one-to-one, non-crossing, IoU-thresholded — is the wrong
+instrument for it. Reporting a visual kappa produced by this tooling would be
+a number about the tooling.
+
+_The expensive mistake is on the speech side._ Phase 1 records and annotates
+audio. The visual channel is annotated in Phase 5, when the corpus already
+exists, and a taxonomy error there costs re-annotating one modality rather
+than re-recording the corpus.
+
+**Consequence for the thesis.** Any claim of the form "two annotators applied
+the taxonomy consistently" must read "applied the _speech_ taxonomy
+consistently". The visual taxonomy enters Phase 5 unvalidated, and closing it
+needs its own pilot with its own protocol — including deciding whether its
+classes are events at all.
+
+This scope is machine-checked: `tests/corpus/test_scope.py` fails if the
+annotation schema learns to carry a visual class without this section being
+rewritten.
+
 ## Two pilots, not one
 
 Ten minutes of audio can tell you whether the tooling works. It cannot tell you
@@ -61,14 +108,14 @@ whatever they show is about the tool.
 
 **Purpose:** whether the taxonomy is consistently applicable.
 
-|            |                                                              |
-| ---------- | ------------------------------------------------------------ |
-| Material   | several speakers, sampled to contain enough of each P0 class |
-| Annotators | both, independently and blind                                |
-| Question   | Do two trained people apply these definitions the same way?  |
+|            |                                                                         |
+| ---------- | ----------------------------------------------------------------------- |
+| Material   | several speakers, sampled to contain enough of each P0 **speech** class |
+| Annotators | both, independently and blind                                           |
+| Question   | Do two trained people apply these definitions the same way?             |
 
 **Sampling is by class, not by duration.** The requirement is "enough examples
-per class", and the rarer classes drive the sample size: `cut_off` and
+per speech class", and the rarer classes drive the sample size: `cut_off` and
 `prolongation` appear far less often than `filled_pause`, so a sample chosen by
 minutes will contain plenty of the latter and almost none of the former.
 Select material until each P0 class has enough instances for its per-class
@@ -128,12 +175,28 @@ assuming shared units, is not — its difference function is intricate, there is
 no widely-trusted Python implementation to check against, and a subtly wrong
 alpha-u in a thesis is worse than an absent one.
 
-Stages 1 and 2 answer what alpha-u answers, in numbers whose computation is
-readable in `corpus/agreement/measures.py`. If a reviewer asks for alpha-u
-specifically, the two honest routes are to integrate an established
-implementation and cite it, or to have the methodologist specify the difference
-function and implement it against worked examples. See
-`corpus/agreement/report.py`.
+Stages 1 and 2 address the same **question** — did they segment the timeline
+the same way — in numbers whose computation is readable in
+`corpus/agreement/measures.py`. They are **not the same measurement**, and the
+thesis must not claim they are. Two differences a reviewer will find:
+
+- **They are not chance-corrected.** Alpha-u is. Specific agreement and a
+  boundary median are raw observed agreement, so two annotators marking events
+  at random on a densely annotated recording show some agreement here and none
+  under alpha-u.
+- **They are two numbers on no common scale, not one coefficient.** Alpha-u
+  gives a single value over the whole continuum, empty stretches included,
+  where 0 is chance and 1 is perfect. The pair here deliberately never touches
+  the empty timeline — which is why it cannot be inflated by it — and has no
+  such scale: 0.78 specific agreement is the F1 between two annotators _at one
+  matching threshold_, and it moves when the threshold moves. That is why every
+  report prints the matching rule beside the number.
+
+If a reviewer asks for alpha-u specifically, or the thesis needs a
+chance-corrected unitizing coefficient, the two honest routes are to integrate
+an established implementation and cite it, or to have the methodologist specify
+the difference function and implement it against worked examples from
+Krippendorff's own papers. See `corpus/agreement/report.py`.
 
 ## The same matching rule is used to score the model
 

@@ -51,6 +51,7 @@ def _annotated(tmp_path: Path, annotator: str, *, offset_ms: int, event: str) ->
         <PROPERTY NAME="speaker_pseudonym">P-001</PROPERTY>
         <PROPERTY NAME="annotator_id">{annotator}</PROPERTY>
         <PROPERTY NAME="annotation_pass">first</PROPERTY>
+        <PROPERTY NAME="schema_version">1.0.0</PROPERTY>
         <PROPERTY NAME="taxonomy_version">1.0.0</PROPERTY>
     </HEADER>
     <TIME_ORDER>

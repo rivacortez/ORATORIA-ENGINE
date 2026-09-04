@@ -356,6 +356,7 @@ def _write_filled(path: Path) -> None:
         <PROPERTY NAME="speaker_pseudonym">P-001</PROPERTY>
         <PROPERTY NAME="annotator_id">ana</PROPERTY>
         <PROPERTY NAME="annotation_pass">first</PROPERTY>
+        <PROPERTY NAME="schema_version">1.0.0</PROPERTY>
         <PROPERTY NAME="taxonomy_version">1.0.0</PROPERTY>
     </HEADER>
     <TIME_ORDER>

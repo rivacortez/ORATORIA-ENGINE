@@ -24,7 +24,12 @@ from corpus.agreement.matching import (
     DEFAULT_TOLERANCE_MS,
     MatchCriterion,
 )
-from corpus.agreement.report import AgreementReport, compare
+from corpus.agreement.report import (
+    AgreementReport,
+    Reading,
+    RefusedComparison,
+    compare,
+)
 from corpus.io.elan import ElanError, read, write_template
 from corpus.schema.records import AnnotationPass
 from corpus.schema.validation import validate
@@ -45,6 +50,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # annotations it is about, not that something somewhere is wrong.
         print(f"error: {error}", file=sys.stderr)
         return 1
+    except RefusedComparison as error:
+        # Distinguished from a parse failure by exit code 3, so that a script
+        # driving the pilot can tell "these files are unreadable" from "these
+        # files are readable and must not be compared".
+        print(f"refused: {error}", file=sys.stderr)
+        return 3
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -69,6 +80,11 @@ def _parser() -> argparse.ArgumentParser:
         choices=[item.value for item in AnnotationPass],
         default=AnnotationPass.FIRST.value,
     )
+    template.add_argument(
+        "--force",
+        action="store_true",
+        help="replace the file if it exists; without this, an existing file is refused",
+    )
     template.set_defaults(handler=_template)
 
     check = subcommands.add_parser("validate", help="check one or more annotation files")
@@ -88,6 +104,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     agreement.add_argument("--iou", type=float, default=DEFAULT_IOU_THRESHOLD)
     agreement.add_argument("--tolerance-ms", type=int, default=DEFAULT_TOLERANCE_MS)
+    agreement.add_argument(
+        "--boundary-review-ms",
+        type=int,
+        default=DEFAULT_TOLERANCE_MS,
+        help=(
+            "list a matched pair for adjudication when its boundaries differ by more "
+            "than this (default: NFR-004's 250 ms)"
+        ),
+    )
     agreement.add_argument("--json", action="store_true", dest="as_json")
     agreement.set_defaults(handler=_agreement)
 
@@ -102,6 +127,7 @@ def _template(args: argparse.Namespace) -> int:
         annotator_id=args.annotator,
         media_url=args.media,
         annotation_pass=AnnotationPass(args.annotation_pass),
+        overwrite=args.force,
     )
     print(f"wrote {args.output}")
     print(
@@ -158,6 +184,7 @@ def _agreement(args: argparse.Namespace) -> int:
         criterion=MatchCriterion(args.criterion),
         iou_threshold=args.iou,
         tolerance_ms=args.tolerance_ms,
+        boundary_review_ms=args.boundary_review_ms,
     )
 
     if args.as_json:
@@ -216,7 +243,46 @@ def _as_dict(report: AgreementReport) -> dict[str, Any]:
             "left_uncertain": report.left_uncertain,
             "right_uncertain": report.right_uncertain,
         },
+        # Event by event, in recording order. The coefficients above say how
+        # much they disagreed; this is the only part an adjudication session
+        # can actually work through, and the only part that can be pasted into
+        # DISAGREEMENT_LOG.md without being reconstructed by hand.
+        "disagreements": {
+            "boundary_review_ms": report.boundary_review_ms,
+            "count": len(report.disagreements),
+            "items": [
+                {
+                    "kind": item.kind.value,
+                    "at_ms": item.at_ms,
+                    "timestamp": item.timestamp,
+                    "detail": item.detail,
+                    "left": _reading_dict(item.left),
+                    "right": _reading_dict(item.right),
+                }
+                for item in report.disagreements
+            ],
+        },
         "notes": list(report.notes),
+    }
+
+
+def _reading_dict(reading: Reading | None) -> dict[str, Any] | None:
+    """``null`` where an annotator recorded nothing, not an empty reading.
+
+    The difference matters downstream: an empty object reads as "they marked
+    something blank here", and the whole point of a missed event is that they
+    marked nothing.
+    """
+    if reading is None:
+        return None
+    return {
+        "annotator": reading.annotator,
+        "start_ms": reading.start_ms,
+        "end_ms": reading.end_ms,
+        "event_type": reading.event_type,
+        "context_role": reading.context_role,
+        "raw_text": reading.raw_text,
+        "note": reading.note,
     }
 
 
@@ -267,8 +333,40 @@ def _print_report(report: AgreementReport) -> None:
         f"{report.right_annotator}={report.right_uncertain}"
     )
 
+    _print_disagreements(report)
+
     for note in report.notes:
         print(f"\n  note: {note}")
+
+
+def _print_disagreements(report: AgreementReport) -> None:
+    """The adjudication worklist, in the order the recording plays.
+
+    Formatted to be walked through with the audio open: timestamp first, then
+    what each annotator saw. An adjudication session driven from a confusion
+    matrix has to reconstruct these positions by hand, and the ones that get
+    lost in the reconstruction are the ones nobody writes down.
+    """
+    print(f"\n  Disagreements to adjudicate ({len(report.disagreements)})")
+    if not report.disagreements:
+        print("     none")
+        return
+
+    print(
+        f"     boundary differences below {report.boundary_review_ms} ms are not listed (NFR-004)"
+    )
+    for item in report.disagreements:
+        print(f"\n     {item.timestamp}  {item.kind.value}")
+        print(f"       {_reading_line(report.left_annotator, item.left)}")
+        print(f"       {_reading_line(report.right_annotator, item.right)}")
+        print(f"       -> {item.detail}")
+
+
+def _reading_line(annotator: str, reading: Reading | None) -> str:
+    if reading is None:
+        return f"{annotator:<12} (nothing here)"
+    line = f"{reading.annotator:<12} {reading}"
+    return f"{line}  # {reading.note}" if reading.note else line
 
 
 def _coefficient(value: float | None) -> str:

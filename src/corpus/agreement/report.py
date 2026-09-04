@@ -32,10 +32,30 @@ is worse than an absent one. Writing it from memory would be guessing at a
 formula that a reviewer can look up.
 
 What stands in its place is the pair the event-detection literature uses for
-exactly this question: positive specific agreement for *whether* the same
-events were found, and the boundary-error distribution for *how precisely*.
-Together they answer what alpha-u answers, in numbers whose computation is
-readable in this file.
+this question: positive specific agreement for *whether* the same events were
+found, and the boundary-error distribution for *how precisely*, in numbers
+whose computation is readable in this file.
+
+**This is not the same measurement, and the thesis must not claim it is.** Two
+differences a reviewer will find:
+
+*They are not chance-corrected.* Alpha-u is; specific agreement and a boundary
+median are raw observed agreement. Two annotators who mark events at random on
+a densely annotated recording will show some agreement here and none under
+alpha-u.
+
+*They report the segmentation in two numbers rather than one.* Alpha-u gives a
+single coefficient over the whole continuum, including the stretches both
+annotators left empty, on a scale where 0 is chance and 1 is perfect. The pair
+here deliberately never touches the empty timeline (which is why it cannot be
+inflated by it) and has no such scale: 0.78 specific agreement is not "0.78 of
+the way to perfect unitizing", it is the F1 between two annotators at one
+matching threshold, and it moves when the threshold moves.
+
+So: these answer the same *question* — did they segment the timeline the same
+way — with different properties, and the report prints the matching rule
+precisely because the numbers are only readable alongside it. Where the thesis
+needs a chance-corrected unitizing coefficient, it needs alpha-u itself.
 
 Two ways to close the gap, if a reviewer asks for alpha-u specifically:
 integrate an established implementation and cite it, or have the methodologist
@@ -55,6 +75,7 @@ target of 0.80 has to be read against 0.78 rather than against 1.0.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from corpus.agreement.matching import (
     DEFAULT_IOU_THRESHOLD,
@@ -70,7 +91,12 @@ from corpus.agreement.measures import (
     confusion,
     krippendorffs_alpha,
 )
-from corpus.schema.records import AnnotatedRecording
+from corpus.schema.records import (
+    AnnotatedRecording,
+    AnnotationPass,
+    DisfluencyAnnotation,
+)
+from corpus.schema.validation import validate
 from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventType
 
 #: The classes the manual predicts will be hardest, reported separately.
@@ -85,8 +111,107 @@ WATCHED_CLASSES: tuple[SpeechEventType, ...] = (
 )
 
 
-class MismatchedRecordings(Exception):
+class RefusedComparison(Exception):
+    """These two files cannot produce an interpretable agreement figure.
+
+    Refusing rather than reporting with a caveat. Every one of the conditions
+    below produces a report that renders perfectly: the coefficients compute,
+    the confusion matrix fills in, and the number is about something other than
+    what the reader will take it to be about. A note at the bottom of a report
+    does not survive being copied into a results table.
+    """
+
+
+class MismatchedRecordings(RefusedComparison):
     """Two files that do not describe the same recording were compared."""
+
+
+class NotIndependent(RefusedComparison):
+    """One of the two files is not an independent opinion.
+
+    Agreement is a measurement of two people annotating the same audio without
+    seeing each other's work. An adjudicated file is what they settled on
+    *after* seeing it, so comparing it to either original measures the
+    resolution process and scores near 1 by construction.
+    """
+
+
+class IncompatibleVersions(RefusedComparison):
+    """The two files were written under record shapes that do not compare."""
+
+
+class UnusableAnnotation(RefusedComparison):
+    """A file the validator rejected was submitted for comparison.
+
+    Blocking, unlike a warning. An overlapping pair of same-class annotations
+    offers the matching two candidates where the other annotator has one, so
+    the disagreement it produces is an artefact of a mis-drag.
+    """
+
+
+class DisagreementKind(StrEnum):
+    """Why one position needs adjudicating.
+
+    Separated because the four have completely different fixes. A missed event
+    is a detection problem - one annotator did not hear it. A class conflict is
+    a taxonomy problem - they both heard it and the manual did not tell them
+    what to call it. A role conflict is narrower still. A boundary conflict is
+    usually neither: two people agreeing about an event and drawing it
+    differently is what NFR-004's 250 ms target is measured against.
+
+    Reporting them as one number is how a manual that needs rewriting gets
+    filed as "annotators need more training".
+    """
+
+    MISSED_BY_LEFT = "missed_by_left"
+    MISSED_BY_RIGHT = "missed_by_right"
+    CLASS = "class"
+    ROLE = "role"
+    BOUNDARY = "boundary"
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """What one annotator recorded at one position."""
+
+    annotator: str
+    start_ms: int
+    end_ms: int
+    event_type: str
+    context_role: str | None
+    raw_text: str
+    note: str
+
+    def __str__(self) -> str:
+        role = f"/{self.context_role}" if self.context_role else ""
+        text = f" {self.raw_text!r}" if self.raw_text else ""
+        return f"{self.event_type}{role} [{self.start_ms}-{self.end_ms}]{text}"
+
+
+@dataclass(frozen=True, slots=True)
+class Disagreement:
+    """One position two annotators have to walk through together.
+
+    The protocol's adjudication step asks for the audio position, both
+    readings, and what was decided. The first two are here; the third is
+    written by the people doing it. Producing this list by hand from a
+    confusion matrix is the step where disagreements quietly go missing,
+    because a matrix says a `false_start` was read as a `self_repair` three
+    times and not *where*.
+    """
+
+    kind: DisagreementKind
+    at_ms: int
+    left: Reading | None
+    right: Reading | None
+    detail: str
+
+    @property
+    def timestamp(self) -> str:
+        """``mm:ss.mmm``, to seek to in the annotation tool."""
+        minutes, remainder = divmod(self.at_ms, 60_000)
+        seconds, milliseconds = divmod(remainder, 1_000)
+        return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +257,16 @@ class AgreementReport:
     role_confusion: ConfusionMatrix
     role_agreement: tuple[ClassAgreement, ...]
 
+    #: Every position that needs adjudicating, in the order an adjudicator
+    #: will walk the recording. The coefficients say how much they disagreed;
+    #: this says where, which is the only form the protocol's adjudication step
+    #: can act on.
+    disagreements: tuple[Disagreement, ...] = field(default_factory=tuple)
+    #: The boundary error above which a matched pair is worth walking through.
+    #: Anchored to NFR-004's 250 ms so that the pairs flagged here are the
+    #: pairs the model will later be scored against.
+    boundary_review_ms: int = DEFAULT_TOLERANCE_MS
+
     #: Abstention. §17 prescribes `uncertain`, so using it is following the
     #: manual - but a class that is uncertain half the time has a definition
     #: problem, and that is what the pilot exists to surface.
@@ -155,16 +290,14 @@ def compare(
     criterion: MatchCriterion = MatchCriterion.IOU,
     iou_threshold: float = DEFAULT_IOU_THRESHOLD,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
+    boundary_review_ms: int = DEFAULT_TOLERANCE_MS,
 ) -> AgreementReport:
-    """Measure agreement between two annotations of the same recording."""
-    if left.recording_id != right.recording_id:
-        raise MismatchedRecordings(
-            f"{left.recording_id!r} and {right.recording_id!r} are different recordings"
-        )
-    if left.annotator_id == right.annotator_id:
-        raise MismatchedRecordings(
-            f"both files are by {left.annotator_id!r}; agreement is between two people"
-        )
+    """Measure agreement between two annotations of the same recording.
+
+    Refuses anything that would produce a number about the wrong thing. See
+    ``RefusedComparison`` and its subclasses for what is turned away and why.
+    """
+    _require_comparable(left, right)
 
     matching = match(
         left.disfluencies,
@@ -214,7 +347,178 @@ def compare(
         ),
         left_uncertain=left.uncertain_count,
         right_uncertain=right.uncertain_count,
+        disagreements=_disagreements(matching, boundary_review_ms),
+        boundary_review_ms=boundary_review_ms,
         notes=_notes(left, right, matching),
+    )
+
+
+def _reading(annotation: DisfluencyAnnotation) -> Reading:
+    return Reading(
+        annotator=annotation.annotator_id,
+        start_ms=annotation.interval.start_ms,
+        end_ms=annotation.interval.end_ms,
+        event_type=annotation.event_type.value,
+        context_role=annotation.context_role.value if annotation.context_role else None,
+        raw_text=annotation.raw_text,
+        note=annotation.note,
+    )
+
+
+def _disagreements(matching: Matching, boundary_review_ms: int) -> tuple[Disagreement, ...]:
+    """Every position worth walking through, in recording order.
+
+    One entry per position, not per category: a pair that differs in class
+    *and* in boundary is one thing to discuss, and listing it twice makes the
+    adjudication log double-count. Class is reported over role, and role over
+    boundary, because that is the order in which resolving one makes the next
+    moot - deciding it was a `self_repair` after all settles the role question
+    that came with the other reading.
+    """
+    found: list[Disagreement] = []
+
+    for pair in matching.pairs:
+        left, right = _reading(pair.left), _reading(pair.right)
+        if not pair.same_class:
+            found.append(
+                Disagreement(
+                    kind=DisagreementKind.CLASS,
+                    at_ms=min(left.start_ms, right.start_ms),
+                    left=left,
+                    right=right,
+                    detail=f"{left.event_type} vs {right.event_type}",
+                )
+            )
+            continue
+        if not pair.same_role:
+            found.append(
+                Disagreement(
+                    kind=DisagreementKind.ROLE,
+                    at_ms=min(left.start_ms, right.start_ms),
+                    left=left,
+                    right=right,
+                    detail=f"{left.context_role} vs {right.context_role}",
+                )
+            )
+            continue
+        worst = max(pair.start_error_ms, pair.end_error_ms)
+        if worst > boundary_review_ms:
+            found.append(
+                Disagreement(
+                    kind=DisagreementKind.BOUNDARY,
+                    at_ms=min(left.start_ms, right.start_ms),
+                    left=left,
+                    right=right,
+                    detail=(
+                        f"start off by {pair.start_error_ms} ms, end by "
+                        f"{pair.end_error_ms} ms (over the {boundary_review_ms} ms "
+                        "NFR-004 target)"
+                    ),
+                )
+            )
+
+    for annotation in matching.left_only:
+        reading = _reading(annotation)
+        found.append(
+            Disagreement(
+                kind=DisagreementKind.MISSED_BY_RIGHT,
+                at_ms=reading.start_ms,
+                left=reading,
+                right=None,
+                detail=f"only {reading.annotator} marked this",
+            )
+        )
+    for annotation in matching.right_only:
+        reading = _reading(annotation)
+        found.append(
+            Disagreement(
+                kind=DisagreementKind.MISSED_BY_LEFT,
+                at_ms=reading.start_ms,
+                left=None,
+                right=reading,
+                detail=f"only {reading.annotator} marked this",
+            )
+        )
+
+    # Recording order, with a total tie-break so two runs over the same files
+    # produce the same log and a diff between manual versions is readable.
+    found.sort(key=lambda item: (item.at_ms, item.kind.value, item.detail))
+    return tuple(found)
+
+
+def _require_comparable(left: AnnotatedRecording, right: AnnotatedRecording) -> None:
+    """Everything that has to hold before a coefficient means anything.
+
+    Checked here rather than left to the caller. A precondition the caller is
+    trusted to remember is a precondition that holds until the first time
+    somebody runs the calculator from a notebook.
+    """
+    if left.recording_id != right.recording_id:
+        raise MismatchedRecordings(
+            f"{left.recording_id!r} and {right.recording_id!r} are different recordings"
+        )
+    if left.annotator_id == right.annotator_id:
+        raise MismatchedRecordings(
+            f"both files are by {left.annotator_id!r}; agreement is between two people"
+        )
+
+    for side, recording in (("left", left), ("right", right)):
+        if recording.annotation_pass is AnnotationPass.ADJUDICATED:
+            raise NotIndependent(
+                f"the {side} file ({recording.annotator_id!r}) is an adjudicated pass. "
+                "It records what the annotators settled on after seeing each other's "
+                "work, so comparing it to either original measures the adjudication "
+                "and scores near 1 by construction. Compare the two first passes."
+            )
+
+    if not left.schema_version.is_compatible_with(right.schema_version):
+        raise IncompatibleVersions(
+            f"the files were written under schema {left.schema_version} and "
+            f"{right.schema_version}. Across a major version the records are different "
+            "shapes, and the report would measure the schema change."
+        )
+
+    _require_comparable_taxonomies(left, right)
+    _require_valid(left)
+    _require_valid(right)
+
+
+def _require_comparable_taxonomies(left: AnnotatedRecording, right: AnnotatedRecording) -> None:
+    """A major taxonomy difference is refused; a minor one becomes a note.
+
+    The asymmetry is the point. Within a major version the class list is
+    additive, so the two annotators had the same words available for the same
+    things and the report is about them. Across a major version a class has
+    been redefined or removed, and the "disagreement" is two people correctly
+    following two different manuals - which §17 of the protocol handles by
+    re-running the pilot, not by reporting a number.
+    """
+    if left.taxonomy_version is None or right.taxonomy_version is None:
+        return
+    if not left.taxonomy_version.is_compatible_with(right.taxonomy_version):
+        raise IncompatibleVersions(
+            f"the annotators worked under taxonomy {left.taxonomy_version} and "
+            f"{right.taxonomy_version}. Across a major version a class has been "
+            "redefined or removed, so this would measure the manual change rather "
+            "than the annotators. Re-run the pilot under one version."
+        )
+
+
+def _require_valid(recording: AnnotatedRecording) -> None:
+    """Refuse a file the validator found errors in.
+
+    Warnings still pass: an agreement report over only the tidy files would
+    measure the annotators' tidiness and would drop exactly the hard cases the
+    pilot exists to find. Errors do not, because each one breaks a premise the
+    matching relies on.
+    """
+    report = validate(recording)
+    if report.is_usable:
+        return
+    reasons = "; ".join(f"{f.code}: {f.message}" for f in report.errors)
+    raise UnusableAnnotation(
+        f"{recording.annotator_id}'s annotation of {recording.recording_id} has "
+        f"{len(report.errors)} validation error(s) and cannot be compared - {reasons}"
     )
 
 
@@ -279,10 +583,15 @@ def _notes(
     notes: list[str] = []
 
     if left.taxonomy_version != right.taxonomy_version:
+        # A *major* difference is refused outright in `_require_comparable`.
+        # What reaches here is a minor or patch difference, or a file that did
+        # not record a version at all: additive changes, where the two
+        # annotators had the same words available for the same things.
         notes.append(
             f"the annotators worked under different taxonomy versions "
-            f"({left.taxonomy_version} and {right.taxonomy_version}); this report "
-            "measures the change as well as the annotators"
+            f"({left.taxonomy_version} and {right.taxonomy_version}). Same major "
+            "version, so the class list is additive and the comparison stands - but "
+            "a class added between them was available to only one of them"
         )
 
     if matching.matched_count < 20:

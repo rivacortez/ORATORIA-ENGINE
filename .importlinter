@@ -124,16 +124,24 @@ forbidden_modules =
     evidence_engine.adapters.outbound
 
 ; --------------------------------------------------------------------------
-; C7 - The corpus tooling shares the taxonomy and nothing else.
+; C7 - The corpus tooling shares the shared kernel and nothing else.
 ;
 ; Sharing the taxonomy is the point: an annotation schema that drifts from the
 ; published allowlist produces disagreement that looks like a hard boundary
-; case and is really a documentation bug. Sharing anything else would let
-; research tooling depend on the service's transaction handling and quotas,
-; and the service is the thing that has to stay deployable.
+; case and is really a documentation bug. `shared` also carries the version
+; primitives the annotation records are stamped with, and that is the whole
+; surface - the corpus knows what a class *means* and what a version *is*,
+; and nothing about how the service runs.
+;
+; The observation packages are listed explicitly rather than left to a
+; comment. Allowing all of `domain` would let the annotation tooling reach
+; into `sessions`, `evidence` or `quality` - the service's own aggregates, its
+; state machine and its ledger - which is neither what the docstrings promise
+; nor anything the corpus has a use for. A contract that permits what its own
+; name forbids is a contract nobody will trust the second time.
 ; --------------------------------------------------------------------------
-[importlinter:contract:corpus-sees-only-the-domain]
-name = C7 - Corpus tooling imports the domain, never the service
+[importlinter:contract:corpus-sees-only-the-shared-kernel]
+name = C7 - Corpus tooling imports the shared kernel, never the rest of the engine
 type = forbidden
 source_modules =
     corpus
@@ -141,6 +149,12 @@ forbidden_modules =
     evidence_engine.application
     evidence_engine.adapters
     evidence_engine.bootstrap
+    evidence_engine.domain.sessions
+    evidence_engine.domain.transcript
+    evidence_engine.domain.speech_events
+    evidence_engine.domain.visual_events
+    evidence_engine.domain.quality
+    evidence_engine.domain.evidence
 
 ; --------------------------------------------------------------------------
 ; C8 - and the service never imports the corpus tooling. A deployed engine
