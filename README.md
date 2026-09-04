@@ -163,6 +163,20 @@ with no fitted calibration curve, `Confidence.meets` refuses every gate, so
 nothing is published as _confirmed_ on the strength of a number nobody
 measured.
 
+## CI and branch protection
+
+Two jobs, both required conceptually and neither enforced server-side yet:
+
+- `battery` — ruff, mypy `--strict`, six import contracts, the full suite with
+  warnings as errors, 88% branch-coverage floor on domain and application
+- `integration` — migration round-trip plus the 16 tests against PostgreSQL,
+  Redis and MinIO
+
+Branch protection on a **private** repository requires GitHub Pro; both the
+rulesets and the classic API return 403 on this account. `./scripts/install-hooks.sh`
+installs a local pre-push stand-in. The gap and the three ways to close it are
+written down in `docs/governance/BRANCH_PROTECTION.md` rather than left implicit.
+
 ## Documents
 
 - `docs/taxonomy/ANNOTATION_MANUAL.md` — generated from the frozen taxonomy
@@ -171,3 +185,5 @@ measured.
   with the participant-facing text
 - `docs/governance/BASELINES.md` — frozen baselines and the evaluation protocol
 - `docs/adr/` — ADR-001 .. ADR-010
+- `docs/evidence/` — raw battery output from runs against real infrastructure
+- `docs/governance/BRANCH_PROTECTION.md` — what is and is not enforced

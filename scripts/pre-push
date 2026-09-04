@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Run the checks that would gate a pull request, before pushing to main.
+#
+# This is a stand-in, not a replacement. Branch protection on a private
+# repository requires GitHub Pro; until the account has it, nothing on the
+# server side refuses a push that breaks the gates. A hook lives on one
+# machine and can be skipped with --no-verify, so treat it as a reminder with
+# teeth rather than as enforcement.
+#
+# Install with: ./scripts/install-hooks.sh
+#
+# The integration suite is deliberately not run here. It needs infrastructure,
+# and a hook that fails because Docker is not running teaches people to pass
+# --no-verify, which costs more than it saves. CI runs it on every push.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+protected="refs/heads/main"
+pushing_to_main=false
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "$protected" ]; then
+    pushing_to_main=true
+  fi
+done
+
+if [ "$pushing_to_main" = false ]; then
+  exit 0
+fi
+
+echo "pre-push: running the CI gates for main"
+
+export PYTHONIOENCODING=utf-8
+export ENGINE_API_KEY_PEPPER="${ENGINE_API_KEY_PEPPER:-local-pepper-value-at-least-32-chars}"
+export ENGINE_STREAM_TOKEN_SIGNING_KEY="${ENGINE_STREAM_TOKEN_SIGNING_KEY:-local-signing-key-at-least-32-chars-x}"
+
+uv run ruff check src tests scripts
+uv run ruff format --check src tests scripts
+uv run mypy
+uv run lint-imports
+uv run pytest -q -m "not integration" \
+  --cov=evidence_engine.domain \
+  --cov=evidence_engine.application \
+  --cov-branch \
+  --cov-report= \
+  --cov-fail-under=88
+
+echo "pre-push: gates passed"
