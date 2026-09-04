@@ -1,15 +1,15 @@
 OratorIA Multimodal Evidence Engine - battery evidence
-Captured (UTC): 2026-09-04T20:24:38Z
-Commit:         c8f8f74c05b54887c1cea17b03c1a5d26678a2ad
+Captured (UTC): 2026-09-04T20:33:43Z
+Commit:         91860275bb9f46086c554eaba17beea779a83646
 Branch:         main
 Tree state:     0 uncommitted file(s) outside docs/evidence
 Python:         Python 3.12.10
 Database:       postgresql+asyncpg://... (credentials redacted)
 
 === infrastructure ===
-minio	minio/minio:latest	Up 13 minutes (healthy)
-postgres	postgres:16-alpine	Up 13 minutes (healthy)
-redis	redis:7-alpine	Up 13 minutes (healthy)
+minio	minio/minio:latest	Up 22 minutes (healthy)
+postgres	postgres:16-alpine	Up 22 minutes (healthy)
+redis	redis:7-alpine	Up 22 minutes (healthy)
 
 === ruff check ===
 All checks passed!
@@ -87,7 +87,7 @@ tests\unit\test_session_lifecycle.py ....................                [ 87%]
 tests\unit\test_taxonomy_doc_is_current.py ...                           [ 89%]
 tests\unit\test_visual_calibration.py ......................             [100%]
 
-============================ 206 passed in 15.16s =============================
+============================ 206 passed in 22.35s =============================
 
 === pytest: integration only ===
 ============================= test session starts =============================
@@ -102,7 +102,7 @@ collected 206 items / 190 deselected / 16 selected
 tests\integration\test_phase2_on_postgres.py ..                          [ 12%]
 tests\integration\test_postgres_adapters.py ..............               [100%]
 
-===================== 16 passed, 190 deselected in 14.17s =====================
+===================== 16 passed, 190 deselected in 25.63s =====================
 
 === coverage: domain + application (NFR-021 floor is 80) ===
 ........................................................................ [ 34%]
