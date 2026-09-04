@@ -93,6 +93,10 @@ ignore = [
 # structured telemetry loses its output. A command line is the one place
 # where stdout *is* the interface.
 "src/corpus/cli/*" = ["T201"]
+# Same reason: this one writes the Pilot A rehearsal transcript, which is piped
+# straight into a committed evidence file. Structured telemetry from it would
+# have nowhere to go.
+"scripts/_pilot_a_checks.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evidence_engine", "corpus"]
