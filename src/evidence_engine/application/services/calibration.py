@@ -62,7 +62,12 @@ class CalibrationCurve:
                     return y1
                 ratio = (clamped - x0) / (x1 - x0)
                 return y0 + ratio * (y1 - y0)
-        return self.points[-1][1]
+        # Unreachable: `clamped` lies inside [first x, last x] by construction,
+        # so some segment always brackets it. Kept because the type checker
+        # cannot see that and a bare fall-through would return None; excluded
+        # from coverage because a test for it would have to break the clamp
+        # above, and would then be testing a state the code cannot be in.
+        return self.points[-1][1]  # pragma: no cover
 
 
 @dataclass(frozen=True, slots=True)

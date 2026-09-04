@@ -37,10 +37,14 @@ def create_app(container: Container | None = None, settings: Settings | None = N
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = resolved
-        yield
-        # Nothing to tear down for the in-memory backend. The persistent
-        # adapters close their pools here, and putting the hook in now means
-        # adding them is not also a change to the startup contract.
+        try:
+            yield
+        finally:
+            # The persistent backend holds a connection pool and a Redis
+            # client. Leaving them open leaks a pool per container, and the
+            # leak surfaces much later as PostgreSQL refusing connections. The
+            # memory backend holds nothing and this is a no-op for it.
+            await resolved.aclose()
 
     app = FastAPI(
         title=TITLE,

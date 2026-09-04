@@ -14,7 +14,8 @@ this port?" stops having an answer you can read.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from functools import partial
 
 from redis.asyncio import Redis
@@ -158,6 +159,22 @@ class Container:
     read_result: ReadResult
     read_capabilities: ReadCapabilities
 
+    #: Async callables that release the infrastructure this container holds -
+    #: the database connection pool, the Redis client. Empty for the memory
+    #: backend, which holds nothing.
+    closers: tuple[Callable[[], Awaitable[None]], ...] = field(default_factory=tuple)
+
+    async def aclose(self) -> None:
+        """Release every held resource.
+
+        Called from the ASGI lifespan. Without it a process that outlives one
+        container - a test harness, a worker that rebuilds its wiring - leaks a
+        connection pool per container, and the leak surfaces as PostgreSQL
+        refusing new connections long after the code that caused it ran.
+        """
+        for close in self.closers:
+            await close()
+
 
 def default_configuration() -> ConfigurationSnapshot:
     """The snapshot a fresh deployment starts from.
@@ -212,9 +229,13 @@ def build_container(
     registry: ModelRegistry
     api_keys: ApiKeyDirectory
 
+    closers: tuple[Callable[[], Awaitable[None]], ...] = ()
+
     if settings.backend is Backend.POSTGRES:
-        factory = create_session_factory(create_engine(settings.database_url))
+        database_engine = create_engine(settings.database_url)
+        factory = create_session_factory(database_engine)
         redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+        closers = (database_engine.dispose, redis_client.aclose)
 
         sessions = PostgresSessionRepository(factory)
         runs = PostgresRunRepository(factory)
@@ -316,6 +337,7 @@ def build_container(
         read_session=ReadSession(sessions=sessions),
         read_result=ReadResult(sessions=sessions, evidence=evidence),
         read_capabilities=ReadCapabilities(SCHEMA_VERSION),
+        closers=closers,
     )
 
 

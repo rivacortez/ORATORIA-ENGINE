@@ -49,17 +49,19 @@ jobs:
         run: lint-imports
 
       - name: Tests
-        # NFR-021: at least 80% branch coverage for the deterministic logic in
-        # the domain and application layers. The adapters are covered by the
-        # contract suite rather than by this gate - model quality is validated
-        # through benchmarks, not through code coverage.
+        # NFR-021 asks for 80% branch coverage on the deterministic logic in
+        # the domain and application layers. The gate is set at 88 because the
+        # suite currently sits at 90: a gate at the requirement lets coverage
+        # decay ten points before anyone hears about it. Adapters are covered
+        # by the contract and integration suites rather than by this gate, and
+        # model quality is validated through benchmarks, not code coverage.
         run: |
           pytest \
             --cov=evidence_engine.domain \
             --cov=evidence_engine.application \
             --cov-branch \
             --cov-report=term-missing \
-            --cov-fail-under=80
+            --cov-fail-under=88
 
       - name: Phase 2 exit criterion
         # Called out as its own step so a failure names the phase it blocks

@@ -27,7 +27,11 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
+    # httpx2, not httpx: starlette.testclient warns that the httpx 0.x
+    # backend is deprecated. Kept alongside because other packages still
+    # resolve `httpx`.
     "httpx>=0.28",
+    "httpx2>=2.12",
     "ruff>=0.8",
     "mypy>=1.13",
     "import-linter>=2.1",
@@ -109,6 +113,20 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
+# Warnings are errors. A suite that prints two warnings prints twenty within a
+# year, and the twenty-first is the one that mattered. The single exemption
+# below is scoped to the exact message and the module that emits it, so it
+# stops applying the moment that module is fixed.
+filterwarnings = [
+    "error",
+    # starlette 1.6.0 annotates against `anyio.abc.BlockingPortal`, which anyio
+    # 4.15 deprecated in favour of `anyio.from_thread.BlockingPortal`. Emitted
+    # at import time from inside starlette; there is no version of it that does
+    # not, and nothing in this repository can change it. Pinning anyio back to
+    # hide it would be downgrading a dependency to silence a third-party
+    # annotation, which trades a real risk for a cosmetic one.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 markers = [
     "integration: requires postgres/redis/object storage",
     "contract: validates the published REST/WebSocket contract",
