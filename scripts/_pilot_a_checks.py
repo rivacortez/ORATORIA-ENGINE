@@ -195,6 +195,20 @@ def write_refusable(work: Path) -> None:
     (work / "other-taxonomy.eaf").write_text(
         _eaf(annotator="beto", events=events, taxonomy_version="2.0.0"), encoding="utf-8"
     )
+    # A *minor* difference, which used to be tolerated with a note. The
+    # protocol says any taxonomy change requires re-running the pilot, so the
+    # rehearsal exercises the difference the code used to let through rather
+    # than only the one it always caught.
+    (work / "minor-taxonomy.eaf").write_text(
+        _eaf(annotator="beto", events=events, taxonomy_version="1.1.0"), encoding="utf-8"
+    )
+    # No taxonomy version at all. This one is refused at read time: it used to
+    # become `None`, and `None` compares unequal to nothing, so the file walked
+    # past the guard written to compare manuals.
+    (work / "no-taxonomy.eaf").write_text(
+        _eaf(annotator="beto", events=events).replace(f'NAME="{PROP_TAXONOMY}"', 'NAME="unused"'),
+        encoding="utf-8",
+    )
     (work / "overlapping.eaf").write_text(
         _eaf(
             annotator="beto",
@@ -205,7 +219,8 @@ def write_refusable(work: Path) -> None:
         ),
         encoding="utf-8",
     )
-    print("  wrote adjudicated, future-schema, other-taxonomy and overlapping files")
+    print("  wrote adjudicated, future-schema, other-taxonomy, minor-taxonomy,")
+    print("  no-taxonomy and overlapping files")
 
 
 def compare_directions(work: Path) -> None:

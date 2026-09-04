@@ -147,12 +147,21 @@ corpus() { uv run python -m corpus.cli.main "$@"; }
     corpus agreement "$WORK/annotated-ana.eaf" "$WORK/annotated-ana.eaf"
   check_refuses "an incompatible schema version is refused" \
     corpus agreement "$WORK/annotated-ana.eaf" "$WORK/future-schema.eaf"
-  check_refuses "an incompatible taxonomy version is refused" \
+  check_refuses "a major taxonomy difference is refused" \
     corpus agreement "$WORK/annotated-ana.eaf" "$WORK/other-taxonomy.eaf"
+  # The two the review found. A minor difference used to pass with a note, and
+  # a missing version used to become `None` and skip the guard entirely.
+  check_refuses "a minor taxonomy difference is refused too" \
+    corpus agreement "$WORK/annotated-ana.eaf" "$WORK/minor-taxonomy.eaf"
+  check_refuses "a file recording no taxonomy version is refused" \
+    corpus agreement "$WORK/annotated-ana.eaf" "$WORK/no-taxonomy.eaf"
   check_refuses "a file with a validation error is refused" \
     corpus agreement "$WORK/annotated-ana.eaf" "$WORK/overlapping.eaf"
   check_refuses "an IoU threshold of 0 is refused" \
     corpus agreement "$WORK/annotated-ana.eaf" "$WORK/annotated-beto.eaf" --iou 0
+  check_refuses "a negative boundary review threshold is refused" \
+    corpus agreement "$WORK/annotated-ana.eaf" "$WORK/annotated-beto.eaf" \
+    --boundary-review-ms -1
   echo
 
   # -------------------------------------------------------------------------
