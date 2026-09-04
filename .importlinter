@@ -1,0 +1,122 @@
+; Architectural contracts for the OratorIA Multimodal Evidence Engine.
+;
+; These are not style rules. Each one guards a claim the specification makes
+; about the shape of the system (§4.3, §5, NFR-016). A broken contract means
+; the claim is no longer true, so CI fails before the claim reaches a document.
+
+[importlinter]
+root_package = evidence_engine
+include_external_packages = True
+
+; --------------------------------------------------------------------------
+; C1 - The dependency rule. §4.3: "Adapters -> Application -> Domain".
+; Bootstrap sits above everything because it is the only place allowed to
+; know every layer at once: it wires them.
+; --------------------------------------------------------------------------
+[importlinter:contract:dependency-rule]
+name = C1 - Bootstrap -> Adapters -> Application -> Domain
+type = layers
+layers =
+    evidence_engine.bootstrap
+    evidence_engine.adapters
+    evidence_engine.application
+    evidence_engine.domain
+
+; --------------------------------------------------------------------------
+; C2 - §4.3: "The domain must not import FastAPI, SQLAlchemy, Redis, PyTorch,
+; MLflow or vendor SDKs." Pydantic is on the list too: the domain expresses
+; its invariants in its own constructors, not in a serialization library, so
+; that swapping the wire format cannot silently relax a rule.
+; --------------------------------------------------------------------------
+[importlinter:contract:domain-is-pure]
+name = C2 - The domain imports no framework
+type = forbidden
+source_modules =
+    evidence_engine.domain
+forbidden_modules =
+    fastapi
+    starlette
+    pydantic
+    pydantic_settings
+    sqlalchemy
+    alembic
+    redis
+    aioboto3
+    boto3
+    botocore
+    torch
+    mlflow
+    opentelemetry
+    structlog
+    httpx
+
+; --------------------------------------------------------------------------
+; C3 - NFR-016: speech, vision and fusion runtimes must be replaceable
+; without touching the domain or the public contract. That only holds if the
+; application layer talks to ports and never to a concrete runtime, so it is
+; forbidden the same infrastructure the domain is.
+; --------------------------------------------------------------------------
+[importlinter:contract:application-is-infrastructure-free]
+name = C3 - The application layer talks to ports, not to infrastructure
+type = forbidden
+source_modules =
+    evidence_engine.application
+forbidden_modules =
+    fastapi
+    starlette
+    sqlalchemy
+    alembic
+    redis
+    aioboto3
+    boto3
+    botocore
+    torch
+    mlflow
+
+; --------------------------------------------------------------------------
+; C4 - The shared kernel is the bottom of the domain. If it learns about a
+; sibling package, every other sibling inherits that knowledge through it and
+; C5 becomes decorative.
+; --------------------------------------------------------------------------
+[importlinter:contract:shared-kernel-knows-nobody]
+name = C4 - The shared kernel knows no other domain package
+type = forbidden
+source_modules =
+    evidence_engine.domain.shared
+forbidden_modules =
+    evidence_engine.domain.sessions
+    evidence_engine.domain.transcript
+    evidence_engine.domain.speech_events
+    evidence_engine.domain.visual_events
+    evidence_engine.domain.quality
+    evidence_engine.domain.evidence
+
+; --------------------------------------------------------------------------
+; C5 - Modality independence. QA-02 requires that losing video keeps speech
+; evidence flowing. That is only structurally possible while the two never
+; import each other; the same holds for the other observation packages.
+; `evidence` is deliberately absent: it is the assembly point and is allowed
+; to read all of them.
+; --------------------------------------------------------------------------
+[importlinter:contract:modalities-are-independent]
+name = C5 - Observation packages are independent of each other
+type = independence
+modules =
+    evidence_engine.domain.sessions
+    evidence_engine.domain.transcript
+    evidence_engine.domain.speech_events
+    evidence_engine.domain.visual_events
+    evidence_engine.domain.quality
+
+; --------------------------------------------------------------------------
+; C6 - An inbound adapter that reaches straight into an outbound adapter has
+; skipped the application layer, which is where idempotency, quotas and the
+; session state machine live. Forbidding it keeps those from being optional.
+; --------------------------------------------------------------------------
+[importlinter:contract:inbound-does-not-touch-outbound]
+name = C6 - Inbound adapters do not import outbound adapters
+type = forbidden
+source_modules =
+    evidence_engine.adapters.inbound
+forbidden_modules =
+    evidence_engine.adapters.outbound

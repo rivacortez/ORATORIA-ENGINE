@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Research assets - never committed. Raw media is protected personal data
+# and model artifacts are tracked by the registry, not by Git.
+data/raw/
+data/interim/
+data/corpus/
+artifacts/
+mlruns/
+*.wav
+*.mp4
+*.webm
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
