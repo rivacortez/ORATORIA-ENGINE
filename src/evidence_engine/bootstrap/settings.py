@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     redis_url: str = ""
     object_storage_endpoint: str = ""
     object_storage_bucket: str = "evidence-engine"
+    #: Credentials for the object store. Empty by default and required only for
+    #: the persistent backend: the ambient-credential path that boto3 falls back
+    #: to works on a cloud instance and fails on a laptop with a message about
+    #: credentials rather than about configuration, so they are asked for
+    #: explicitly and checked at startup.
+    object_storage_access_key: str = ""
+    object_storage_secret_key: str = ""
 
     # -- behaviour ---------------------------------------------------------
 
@@ -113,6 +120,8 @@ class Settings(BaseSettings):
                 ("ENGINE_DATABASE_URL", self.database_url),
                 ("ENGINE_REDIS_URL", self.redis_url),
                 ("ENGINE_OBJECT_STORAGE_ENDPOINT", self.object_storage_endpoint),
+                ("ENGINE_OBJECT_STORAGE_ACCESS_KEY", self.object_storage_access_key),
+                ("ENGINE_OBJECT_STORAGE_SECRET_KEY", self.object_storage_secret_key),
             )
             if not value
         ]

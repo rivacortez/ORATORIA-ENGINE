@@ -28,6 +28,10 @@ from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
 from evidence_engine.application.commands.delete_evidence import DeleteEvidence
+from evidence_engine.application.commands.open_run import (
+    CloseProcessingRun,
+    OpenProcessingRun,
+)
 from evidence_engine.application.ports.clock import Clock
 from evidence_engine.application.ports.platform import (
     ApiKeyDirectory,
@@ -90,6 +94,8 @@ class EngineApi(Protocol):
     # Use cases.
     create_session: CreateSession
     capture_control: CaptureControl
+    open_run: OpenProcessingRun
+    close_run: CloseProcessingRun
     complete_session: CompleteSession
     delete_evidence: DeleteEvidence
     read_session: ReadSession

@@ -25,7 +25,7 @@ from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
 
-def render_document(document: EvidenceDocument, schema_version: str) -> dict[str, Any]:
+def render_document(document: EvidenceDocument, *, schema_version: str) -> dict[str, Any]:
     """The complete result, as JSON-ready data."""
     return {
         "schema_version": schema_version,

@@ -44,6 +44,7 @@ def test_the_manual_says_it_is_generated() -> None:
 
 
 def test_the_manual_lives_where_the_readme_says_it_does() -> None:
-    assert Path(__file__).resolve().parents[2] / "docs" / "taxonomy" / (
-        "ANNOTATION_MANUAL.md"
-    ) == OUTPUT
+    assert (
+        Path(__file__).resolve().parents[2] / "docs" / "taxonomy" / ("ANNOTATION_MANUAL.md")
+        == OUTPUT
+    )

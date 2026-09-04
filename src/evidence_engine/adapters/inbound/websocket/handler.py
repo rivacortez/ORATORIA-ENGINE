@@ -57,7 +57,7 @@ from evidence_engine.application.workflows.streaming import (
     StreamingState,
 )
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
-from evidence_engine.domain.shared.identifiers import RunId, SessionId
+from evidence_engine.domain.shared.identifiers import SessionId
 
 router = APIRouter(tags=["stream"])
 
@@ -129,7 +129,23 @@ async def _run(
     session_id: SessionId,
 ) -> None:
     configuration = await engine.configuration.current(caller.tenant)
-    run_id = RunId.generate()
+
+    try:
+        await engine.capture_control.begin(caller, session_id)
+        # The run is opened before any evidence references it. Skipping this
+        # was invisible against the in-memory adapter, which has no foreign
+        # keys, and would have inserted evidence pointing at a row that does
+        # not exist the first time it ran against PostgreSQL.
+        run = await engine.open_run.execute(caller, session_id)
+    except ApplicationError as error:
+        # Consent withdrawn, session already completed, wrong tenant: all
+        # legitimate refusals, none of them a reason to drop the socket without
+        # saying why.
+        await channel.send_error(session_id, "cannot_begin_capture", str(error))
+        await socket.close(code=CLOSE_POLICY_VIOLATION)
+        return
+
+    run_id = run.id
 
     coordinator = StreamingCoordinator(
         state=StreamingState(run_id=run_id, session_id=session_id),
@@ -143,16 +159,6 @@ async def _run(
         visual_assembler=VisualAssembler(run_id, configuration, engine.calibrator),
         max_queue_depth=engine.profile.max_queue_depth,
     )
-
-    try:
-        await engine.capture_control.begin(caller, session_id)
-    except ApplicationError as error:
-        # Consent withdrawn, session already completed, wrong tenant: all
-        # legitimate refusals, none of them a reason to drop the socket without
-        # saying why.
-        await channel.send_error(session_id, "cannot_begin_capture", str(error))
-        await socket.close(code=CLOSE_POLICY_VIOLATION)
-        return
 
     await channel.send_accepted(
         session_id,
@@ -177,6 +183,7 @@ async def _run(
         # failure from invalidating a session, and the transport is no
         # different: the evidence gathered so far stays valid.
         engine.telemetry.counter("stream.disconnected")
+        await engine.close_run.execute(run_id, succeeded=False)
     finally:
         with contextlib.suppress(RuntimeError):
             await socket.close()
@@ -264,6 +271,7 @@ async def _control(
         completed = await engine.complete_session.execute(
             caller, session_id, coordinator.state, configuration
         )
+        await engine.close_run.execute(coordinator.state.run_id)
         await channel.send_completed(
             session_id,
             {

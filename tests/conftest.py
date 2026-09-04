@@ -10,6 +10,13 @@ from __future__ import annotations
 
 import pytest
 
+from evidence_engine.adapters.outbound.model_runtime.deterministic import (
+    ScriptedSpeechEvent,
+    ScriptedVisualEvent,
+    ScriptedWord,
+    SpeechScript,
+    VisualScript,
+)
 from evidence_engine.domain.sessions.capabilities import (
     AudioCodec,
     NegotiatedCapabilities,
@@ -28,7 +35,13 @@ from evidence_engine.domain.shared.identifiers import (
     TenantId,
 )
 from evidence_engine.domain.shared.provenance import Modality, Provenance, SemanticVersion
-from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
+from evidence_engine.domain.shared.taxonomy import (
+    TAXONOMY_VERSION,
+    ContextualRole,
+    SpeechEventType,
+    VisualEventType,
+)
+from evidence_engine.domain.visual_events.events import GazeDirection
 
 POLICY_VERSION = SemanticVersion(1, 0, 0)
 
@@ -109,3 +122,66 @@ def consented_session(
         configuration=configuration,
         created_at_ms=1_000,
     ).with_consent(consent)
+
+
+@pytest.fixture
+def speech_script() -> SpeechScript:
+    """One awkward minute of synthetic Peruvian Spanish.
+
+    Positions are chosen so that the 2 400 ms gap between "resultados" and
+    "muestran" exceeds the default 700 ms silence threshold and becomes a
+    SILENT_PAUSE - derived by the engine from the transcript, not supplied by
+    the script, which is what FR-015 requires.
+    """
+    return SpeechScript(
+        words=(
+            ScriptedWord("buenos", 0, 400),
+            ScriptedWord("dias", 400, 800),
+            ScriptedWord("eeeh", 900, 1_680, score=0.71),
+            ScriptedWord("los", 1_800, 2_000),
+            ScriptedWord("los", 2_000, 2_200),
+            ScriptedWord("resultados", 2_200, 3_000),
+            # A 2 400 ms hole: long enough to become a silent pause.
+            ScriptedWord("muestran", 5_400, 6_000),
+            ScriptedWord("este", 6_100, 6_500),
+            ScriptedWord("una", 6_600, 6_800),
+            ScriptedWord("mejora", 6_800, 7_400),
+        ),
+        events=(
+            ScriptedSpeechEvent(SpeechEventType.FILLED_PAUSE, 900, 1_680, score=0.93),
+            ScriptedSpeechEvent(
+                SpeechEventType.REPETITION,
+                1_800,
+                2_200,
+                score=0.88,
+                raw_text="los los",
+                context_role=ContextualRole.FILLER,
+            ),
+            # Role deliberately absent: the classifier did not decide, so the
+            # assembler must resolve it to UNCERTAIN rather than guessing.
+            ScriptedSpeechEvent(
+                SpeechEventType.LEXICAL_FILLER, 6_100, 6_500, score=0.64, raw_text="este"
+            ),
+        ),
+    )
+
+
+@pytest.fixture
+def visual_script() -> VisualScript:
+    return VisualScript(
+        events=(
+            ScriptedVisualEvent(
+                VisualEventType.GAZE_AWAY_FROM_CAMERA,
+                1_000,
+                1_900,
+                score=0.9,
+                direction=GazeDirection.DOWN,
+            ),
+            ScriptedVisualEvent(
+                VisualEventType.POSTURE_DEVIATION, 6_000, 6_900, score=0.81, magnitude=22.0
+            ),
+            # A P1 class below FR-022's gate. Must be dropped, not published
+            # with low confidence.
+            ScriptedVisualEvent(VisualEventType.SELF_TOUCH, 6_200, 6_600, score=0.31),
+        )
+    )

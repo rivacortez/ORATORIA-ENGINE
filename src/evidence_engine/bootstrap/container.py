@@ -15,10 +15,18 @@ this port?" stops having an answer you can read.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
+from redis.asyncio import Redis
+
+from evidence_engine.adapters.inbound.rest.serialization import render_document
 from evidence_engine.adapters.outbound.cache.in_memory import (
     InMemoryQuotaGuard,
     InMemoryStreamState,
+)
+from evidence_engine.adapters.outbound.cache.redis_state import (
+    RedisQuotaGuard,
+    RedisStreamState,
 )
 from evidence_engine.adapters.outbound.model_runtime.deterministic import (
     DeterministicSpeechRuntime,
@@ -27,6 +35,7 @@ from evidence_engine.adapters.outbound.model_runtime.deterministic import (
     VisualScript,
 )
 from evidence_engine.adapters.outbound.object_storage.in_memory import InMemoryMediaStore
+from evidence_engine.adapters.outbound.object_storage.s3 import S3MediaStore
 from evidence_engine.adapters.outbound.persistence.configuration import (
     InMemoryConfigurationStore,
     InMemoryModelRegistry,
@@ -38,6 +47,23 @@ from evidence_engine.adapters.outbound.persistence.in_memory import (
     InMemoryRunRepository,
     InMemorySessionRepository,
 )
+from evidence_engine.adapters.outbound.persistence.postgres.control_plane import (
+    PostgresApiKeyDirectory,
+    PostgresConfigurationStore,
+    PostgresModelRegistry,
+)
+from evidence_engine.adapters.outbound.persistence.postgres.engine import (
+    create_engine,
+    create_session_factory,
+)
+from evidence_engine.adapters.outbound.persistence.postgres.evidence_repository import (
+    PostgresEvidenceRepository,
+)
+from evidence_engine.adapters.outbound.persistence.postgres.repositories import (
+    PostgresAuditLog,
+    PostgresRunRepository,
+    PostgresSessionRepository,
+)
 from evidence_engine.adapters.outbound.persistence.tokens import HmacStreamTokenMinter
 from evidence_engine.adapters.outbound.telemetry.clock import SystemClock
 from evidence_engine.adapters.outbound.telemetry.structured import StructlogTelemetry
@@ -46,6 +72,10 @@ from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
 from evidence_engine.application.commands.delete_evidence import DeleteEvidence
+from evidence_engine.application.commands.open_run import (
+    CloseProcessingRun,
+    OpenProcessingRun,
+)
 from evidence_engine.application.ports.clock import Clock
 from evidence_engine.application.ports.platform import (
     ApiKeyDirectory,
@@ -120,6 +150,8 @@ class Container:
     # Use cases
     create_session: CreateSession
     capture_control: CaptureControl
+    open_run: OpenProcessingRun
+    close_run: CloseProcessingRun
     complete_session: CompleteSession
     delete_evidence: DeleteEvidence
     read_session: ReadSession
@@ -162,33 +194,65 @@ def build_container(
     """Wire everything. Raises rather than degrading when a backend is missing."""
     settings.require_infrastructure()
 
-    if settings.backend is Backend.POSTGRES:
-        raise NotImplementedError(
-            "the PostgreSQL backend lands with the persistence adapters in phase 2's "
-            "second half; set ENGINE_BACKEND=memory to run the contract suite today"
-        )
-
     resolved_clock: Clock = clock or SystemClock()
     telemetry = StructlogTelemetry()
-
-    sessions = InMemorySessionRepository()
-    runs = InMemoryRunRepository()
-    evidence = InMemoryEvidenceRepository()
-    audit = InMemoryAuditLog()
-    media = InMemoryMediaStore(resolved_clock)
-    stream_state = InMemoryStreamState(resolved_clock)
-    quota = InMemoryQuotaGuard(
-        resolved_clock,
-        limits=(
-            {"sessions": settings.sessions_per_minute} if settings.sessions_per_minute > 0 else {}
-        ),
+    snapshot = default_configuration()
+    quota_limits = (
+        {"sessions": settings.sessions_per_minute} if settings.sessions_per_minute > 0 else {}
     )
 
-    snapshot = default_configuration()
-    configuration = InMemoryConfigurationStore(snapshot)
+    sessions: SessionRepository
+    runs: RunRepository
+    evidence: EvidenceRepository
+    audit: AuditLog
+    media: MediaStore
+    stream_state: StreamState
+    quota: QuotaGuard
+    configuration: ConfigurationStore
+    registry: ModelRegistry
+    api_keys: ApiKeyDirectory
 
-    registry = InMemoryModelRegistry()
-    api_keys = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+    if settings.backend is Backend.POSTGRES:
+        factory = create_session_factory(create_engine(settings.database_url))
+        redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+
+        sessions = PostgresSessionRepository(factory)
+        runs = PostgresRunRepository(factory)
+        # `render_document` comes from the inbound REST adapter. The composition
+        # root is the one place allowed to know both (contract C1), which is
+        # what lets the published shape stay defined once without an outbound
+        # adapter importing an inbound one. The schema version is bound here so
+        # the repository stores exactly the bytes the API would have served.
+        evidence = PostgresEvidenceRepository(
+            factory, partial(render_document, schema_version=str(SCHEMA_VERSION))
+        )
+        audit = PostgresAuditLog(factory)
+        media = S3MediaStore(
+            bucket=settings.object_storage_bucket,
+            endpoint_url=settings.object_storage_endpoint,
+            clock_epoch_ms=resolved_clock.epoch_ms,
+            access_key=settings.object_storage_access_key,
+            secret_key=settings.object_storage_secret_key,
+        )
+        stream_state = RedisStreamState(redis_client)
+        quota = RedisQuotaGuard(redis_client, limits=quota_limits)
+        configuration = PostgresConfigurationStore(factory, snapshot)
+        registry = PostgresModelRegistry(factory)
+        api_keys = PostgresApiKeyDirectory(
+            factory, settings.api_key_pepper, resolved_clock.epoch_ms
+        )
+    else:
+        sessions = InMemorySessionRepository()
+        runs = InMemoryRunRepository()
+        evidence = InMemoryEvidenceRepository()
+        audit = InMemoryAuditLog()
+        media = InMemoryMediaStore(resolved_clock)
+        stream_state = InMemoryStreamState(resolved_clock)
+        quota = InMemoryQuotaGuard(resolved_clock, limits=quota_limits)
+        configuration = InMemoryConfigurationStore(snapshot)
+        registry = InMemoryModelRegistry()
+        api_keys = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+
     tokens = HmacStreamTokenMinter(settings.stream_token_signing_key)
 
     speech, vision = _build_runtimes(settings, registry, speech_script, visual_script)
@@ -231,6 +295,13 @@ def build_container(
             token_minter=tokens,
         ),
         capture_control=CaptureControl(sessions=sessions, clock=resolved_clock),
+        open_run=OpenProcessingRun(
+            sessions=sessions,
+            runs=runs,
+            clock=resolved_clock,
+            pipeline_version=PIPELINE_VERSION,
+        ),
+        close_run=CloseProcessingRun(runs=runs, clock=resolved_clock),
         complete_session=CompleteSession(
             sessions=sessions, evidence=evidence, audit=audit, clock=resolved_clock
         ),
@@ -250,7 +321,7 @@ def build_container(
 
 def _build_runtimes(
     settings: Settings,
-    registry: InMemoryModelRegistry,
+    registry: ModelRegistry,
     speech_script: SpeechScript | None,
     visual_script: VisualScript | None,
 ) -> tuple[SpeechRuntime, VisionRuntime]:
@@ -268,6 +339,12 @@ def _build_runtimes(
     # deterministic runtime is still a version that produced evidence, and a
     # result that could not name it would be untraceable in exactly the runs
     # that are supposed to be the most reproducible.
+    if not isinstance(registry, InMemoryModelRegistry):
+        # The persistent registry is seeded by a migration or an administrative
+        # call, not by process startup. Registering on boot would let a replica
+        # silently reintroduce a version an administrator had just disabled.
+        return speech, vision
+
     for modality, model_id in (
         (Modality.AUDIO, ModelVersionId("deterministic-speech-v1")),
         (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),

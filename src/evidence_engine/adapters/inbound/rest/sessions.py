@@ -121,7 +121,7 @@ async def read_result(
     engine: EngineDep, caller: CallerDep, session_id: SessionIdPath
 ) -> dict[str, Any]:
     document = await engine.read_result.execute(caller, SessionId(session_id))
-    return render_document(document, _schema_version(engine))
+    return render_document(document, schema_version=_schema_version(engine))
 
 
 @router.delete(
