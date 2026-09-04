@@ -83,10 +83,11 @@ export TERM=dumb
   uv run pytest -m integration -v --tb=short --color=no
   echo
 
-  echo "=== coverage: domain + application (NFR-021 floor is 80) ==="
+  echo "=== coverage: domain + application + corpus (NFR-021 floor is 80) ==="
   uv run pytest -q --color=no \
     --cov=evidence_engine.domain \
     --cov=evidence_engine.application \
+    --cov=corpus \
     --cov-branch \
     --cov-report=term
 } 2>&1 | tee "$OUTPUT"

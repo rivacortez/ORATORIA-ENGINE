@@ -35,8 +35,8 @@ Stated up front because most of the design exists to keep these out:
 
 | Phase (§13) | Deliverable                                              | State                                                          |
 | ----------- | -------------------------------------------------------- | -------------------------------------------------------------- |
-| 0           | Scope, taxonomy, annotation manual, consent policy, ADRs | **done**                                                       |
-| 1           | Peruvian Spanish corpus and annotation platform          | not started — field work                                       |
+| 0           | Scope, taxonomy, annotation manual, consent policy, ADRs | **deliverables done; exit criterion not met** — see below                                                       |
+| 0.5         | Experimental closure of the taxonomy                     | **tooling done; pilots not run**                                       |
 | 2           | Platform skeleton and contracts                          | **done, exit criterion proven**                                |
 | 3           | Verbatim speech baseline                                 | not started                                                    |
 | 4           | Disfluency and prosody intelligence                      | not started                                                    |
@@ -46,6 +46,29 @@ Stated up front because most of the design exists to keep these out:
 | 8           | OratorIA integration                                     | not started                                                    |
 | 9           | Scientific validation                                    | not started                                                    |
 | 10          | Production readiness                                     | not started                                                    |
+
+### Phase 0 is not closed, and the distinction matters
+
+§13 separates Phase 0's *deliverables* from its *exit criterion*:
+
+> Two annotators can apply the taxonomy consistently to a pilot sample and
+> unresolved categories are documented.
+
+The deliverables are done. The criterion needs two humans annotating a pilot
+sample, and that has not happened — so **Phase 0.5** exists to close it before
+any recruitment starts. Recording forty speakers and then discovering that
+annotators split `false_start` from `self_repair` differently would mean a
+corpus whose per-class F1 measures annotator noise, and re-annotation costs the
+same as the original.
+
+`docs/corpus/PILOT_PROTOCOL.md` has the two pilots (technical, then taxonomic),
+what gets measured and why in that order. The tooling for it is built and
+tested; the pilots are field work.
+
+Two Phase 0 deliverables were also stated as policy without being instantiated,
+and now have records waiting to be filled:
+`docs/governance/REFERENCE_ENVIRONMENT.md` and
+`docs/governance/BASELINE_PINS.md`.
 
 Phase 2's exit criterion — _"a synthetic session can be streamed, completed,
 queried and deleted without model inference"_ — is executed rather than
@@ -83,6 +106,11 @@ src/evidence_engine/
 │                        (memory + s3), cache (memory + redis),
 │                        model_runtime, telemetry
 └── bootstrap/         composition root, settings, ASGI factory
+
+src/corpus/           research tooling: annotation schema, ELAN import/export,
+                      validation, inter-annotator agreement. A sibling of the
+                      service, not a part of it - contracts C7 and C8 let it
+                      share the taxonomy and nothing else.
 ```
 
 `.importlinter` holds six contracts. Each guards a claim the spec makes:
@@ -95,6 +123,8 @@ src/evidence_engine/
 | C4 shared kernel knows nobody         | keeps C5 from becoming decorative                                                    |
 | C5 modalities are independent         | QA-02 — video can die without taking speech with it                                  |
 | C6 inbound does not touch outbound    | keeps quotas, idempotency and the state machine non-optional                         |
+| C7 corpus sees only the domain        | research tooling shares the taxonomy, never the service's transactions                |
+| C8 service does not import corpus     | a deployed engine needs no annotation parser                                          |
 
 C6 has already earned its place: it broke when the inbound adapters imported
 the composition root, making every transport transitively depend on every
@@ -184,6 +214,8 @@ written down in `docs/governance/BRANCH_PROTECTION.md` rather than left implicit
 - `docs/governance/CONSENT_AND_RETENTION.md` — the policy the code enforces,
   with the participant-facing text
 - `docs/governance/BASELINES.md` — frozen baselines and the evaluation protocol
+- `docs/corpus/PILOT_PROTOCOL.md` — the two pilots that close Phase 0
+- `docs/corpus/DISAGREEMENT_LOG.md` — where annotator disagreements are recorded
 - `docs/adr/` — ADR-001 .. ADR-010
 - `docs/evidence/` — raw battery output from runs against real infrastructure
 - `docs/governance/BRANCH_PROTECTION.md` — what is and is not enforced

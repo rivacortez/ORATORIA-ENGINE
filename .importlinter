@@ -5,7 +5,9 @@
 ; the claim is no longer true, so CI fails before the claim reaches a document.
 
 [importlinter]
-root_package = evidence_engine
+root_packages =
+    evidence_engine
+    corpus
 include_external_packages = True
 
 ; --------------------------------------------------------------------------
@@ -120,3 +122,35 @@ source_modules =
     evidence_engine.adapters.inbound
 forbidden_modules =
     evidence_engine.adapters.outbound
+
+; --------------------------------------------------------------------------
+; C7 - The corpus tooling shares the taxonomy and nothing else.
+;
+; Sharing the taxonomy is the point: an annotation schema that drifts from the
+; published allowlist produces disagreement that looks like a hard boundary
+; case and is really a documentation bug. Sharing anything else would let
+; research tooling depend on the service's transaction handling and quotas,
+; and the service is the thing that has to stay deployable.
+; --------------------------------------------------------------------------
+[importlinter:contract:corpus-sees-only-the-domain]
+name = C7 - Corpus tooling imports the domain, never the service
+type = forbidden
+source_modules =
+    corpus
+forbidden_modules =
+    evidence_engine.application
+    evidence_engine.adapters
+    evidence_engine.bootstrap
+
+; --------------------------------------------------------------------------
+; C8 - and the service never imports the corpus tooling. A deployed engine
+; must not need pandas, an annotation parser, or anything else that exists to
+; support field work.
+; --------------------------------------------------------------------------
+[importlinter:contract:service-does-not-import-corpus]
+name = C8 - The service does not import the corpus tooling
+type = forbidden
+source_modules =
+    evidence_engine
+forbidden_modules =
+    corpus

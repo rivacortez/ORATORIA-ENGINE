@@ -11,16 +11,26 @@ corpus. That comparison is only meaningful if the baseline is chosen and pinned
 _before_ anyone has seen the test results. A baseline selected afterwards is
 selected — consciously or not — to be beatable.
 
-So: artifact digests are pinned here, outputs are generated once over the
-frozen held-out set, and those outputs are stored as a versioned artifact. The
-baseline is never re-run against a newer checkpoint of itself mid-project.
+So two things are frozen, **at two different times**, and conflating them is
+a methodological error:
+
+| Frozen | When | Why then |
+|---|---|---|
+| The models and their configuration | Phase 0.5 | Before anyone has seen a result the choice could be tuned against. |
+| Their outputs over the held-out set | end of Phase 1 | The held-out set does not exist until then. Generating an output over data that is still moving produces a reference to nothing. |
+
+An earlier version of this file read as though outputs could be generated now.
+They cannot. The pins live in `BASELINE_PINS.md`; the outputs are generated
+once the held-out set is frozen, stored as a versioned artifact alongside the
+digest of the input set, and the baseline is never re-run against a newer
+checkpoint of itself for the remainder of the project.
 
 ## 2. The two baselines
 
 | Baseline                               | Role                           | Why this one                                                                                                                                                                                                         |
 | -------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Whisper** (pinned checkpoint)        | The realistic incumbent        | It is what a team would reach for, and its decoder is trained to produce _readable_ output. Measuring how much disfluency it deletes is the clearest possible statement of the problem this project exists to solve. |
-| **CrisperWhisper** (pinned checkpoint) | The strong verbatim comparator | Explicitly targets verbatim transcription and filled-pause retention. Beating a weak baseline proves nothing; this is the one that makes the result defensible.                                                      |
+| **Whisper** (pinned in `BASELINE_PINS.md`)        | The realistic incumbent        | It is what a team would reach for, and its decoder is trained to produce _readable_ output. Measuring how much disfluency it deletes is the clearest possible statement of the problem this project exists to solve. |
+| **CrisperWhisper** (pinned in `BASELINE_PINS.md`) | The strong verbatim comparator | Explicitly targets verbatim transcription and filled-pause retention. Beating a weak baseline proves nothing; this is the one that makes the result defensible.                                                      |
 
 Both are **research comparators**. Neither becomes an undocumented production
 dependency — §11.1 lists that as a constraint, and it is easy to violate by
@@ -83,8 +93,10 @@ and this table is what it looks like when honoured.
 
 ## 6. Reference environment
 
-Performance figures are meaningless without it, so the pilot hardware,
-concurrency level and audio characteristics are recorded alongside every
-latency and throughput measurement. Numbers gathered on a free-tier host are
+Recorded in `REFERENCE_ENVIRONMENT.md` — the record exists with its fields
+empty, and every one of them has to be filled before NFR-005, NFR-006 or
+NFR-007 can carry a number. Performance figures are meaningless without the
+pilot hardware, concurrency level and audio characteristics they were measured
+under. Numbers gathered on a free-tier host are
 not comparable with numbers gathered on the pilot machine and must never be
 reported as if they were.

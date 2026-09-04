@@ -40,13 +40,16 @@ dev = [
 
 [project.scripts]
 evidence-engine = "evidence_engine.bootstrap.cli:main"
+corpus = "corpus.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/evidence_engine"]
+# `corpus` ships alongside the service package but is never imported by
+# it (contract C8). Included so the CLI is installable for annotators.
+packages = ["src/evidence_engine", "src/corpus"]
 
 # ---------------------------------------------------------------------------
 # Ruff
@@ -86,9 +89,13 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
+# T201 forbids `print` because a service that prints instead of emitting
+# structured telemetry loses its output. A command line is the one place
+# where stdout *is* the interface.
+"src/corpus/cli/*" = ["T201"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["evidence_engine"]
+known-first-party = ["evidence_engine", "corpus"]
 
 # ---------------------------------------------------------------------------
 # Mypy
@@ -100,7 +107,7 @@ warn_unreachable = true
 disallow_any_generics = true
 plugins = []
 mypy_path = "src"
-packages = ["evidence_engine"]
+packages = ["evidence_engine", "corpus"]
 
 [[tool.mypy.overrides]]
 module = ["aioboto3.*", "botocore.*"]
@@ -134,7 +141,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/evidence_engine"]
+source = ["src/evidence_engine", "src/corpus"]
 branch = true
 
 [tool.coverage.report]

@@ -1,0 +1,197 @@
+# Phase 0.5 — Experimental closure of the taxonomy
+
+**Status:** protocol approved, not yet executed
+**Blocks:** Phase 1 (corpus construction)
+
+---
+
+## Why this phase exists
+
+§13 separates Phase 0's _deliverables_ from its _exit criterion_:
+
+> Two annotators can apply the taxonomy consistently to a pilot sample and
+> unresolved categories are documented.
+
+The deliverables are done — the taxonomy is frozen, the manual is generated
+from it, the policies are written, the ADRs are recorded. The criterion is not:
+it requires two humans annotating a pilot sample, and that has not happened.
+
+Recording a corpus before that measurement is the most expensive mistake
+available in this project. If forty speakers are recorded and annotated, and it
+then turns out that annotators systematically split `false_start` from
+`self_repair` differently, the corpus is inconsistently labelled and every
+per-class F1 computed on it measures annotator noise instead of model
+performance. The corpus cannot be repaired without re-annotating it, and
+re-annotation costs the same as the original.
+
+So the taxonomy gets closed experimentally first, with a small sample, and the
+manual gets whatever corrections the disagreements demand.
+
+## Two pilots, not one
+
+Ten minutes of audio can tell you whether the tooling works. It cannot tell you
+whether the taxonomy is consistent, because ten minutes contains perhaps three
+examples of the rarer classes and agreement on three examples is not evidence
+of anything.
+
+### Pilot A — technical
+
+**Purpose:** the tool, the format and the pipeline, not the taxonomy.
+
+|            |                                                                               |
+| ---------- | ----------------------------------------------------------------------------- |
+| Material   | ~10 minutes, one speaker, from a recording that will **not** enter the corpus |
+| Annotators | both                                                                          |
+| Question   | Does the round trip work end to end?                                          |
+
+Checks:
+
+- The ELAN template opens, the controlled vocabularies appear, and no class
+  outside the taxonomy can be selected.
+- `corpus validate` reads both files without error.
+- `corpus agreement` produces a report.
+- The annotators can explain, in their own words, what each tier is for.
+
+**Exit:** both files parse, the report renders, and neither annotator is
+guessing at the interface. Agreement numbers from Pilot A are **not** reported —
+the sample is too small and the annotators are still learning the tool, so
+whatever they show is about the tool.
+
+### Pilot B — taxonomic
+
+**Purpose:** whether the taxonomy is consistently applicable.
+
+|            |                                                              |
+| ---------- | ------------------------------------------------------------ |
+| Material   | several speakers, sampled to contain enough of each P0 class |
+| Annotators | both, independently and blind                                |
+| Question   | Do two trained people apply these definitions the same way?  |
+
+**Sampling is by class, not by duration.** The requirement is "enough examples
+per class", and the rarer classes drive the sample size: `cut_off` and
+`prolongation` appear far less often than `filled_pause`, so a sample chosen by
+minutes will contain plenty of the latter and almost none of the former.
+Select material until each P0 class has enough instances for its per-class
+figure to mean something, and record how many that turned out to be.
+
+**Several speakers, not one.** A single speaker's disfluency profile is
+idiosyncratic — some people never produce `prolongation` at all — and agreement
+measured on one speaker is agreement about that speaker.
+
+**Blind.** Separate files, no shared tiers, no discussion until both are
+finished. A second annotator who can see the first is reviewing, not
+annotating, and the resulting figure is not agreement.
+
+## What gets measured, and why in that order
+
+`corpus agreement` reports three stages, because they are three separate
+questions with three different fixes.
+
+### 1. Did they find the same events?
+
+Positive specific agreement over matched events, plus what each found alone.
+Never counts a true negative, so the empty timeline cannot inflate it.
+
+> **The trap this avoids.** Discretise the recording into 10 ms frames, label
+> each with the class covering it or "none", compute Cohen's kappa: about 95%
+> of frames are "none", both annotators agree on essentially all of them, and
+> kappa comes back near 0.9 while telling you nothing. The coefficient measures
+> the silence. `measures.kappa_over_time_frames` exists and raises, so the
+> mistake has somewhere to fail loudly.
+
+### 2. Did they draw the same boundaries?
+
+Median and p95 start and end error over matched pairs.
+
+**This is the human ceiling for NFR-004.** The engine claims a 250 ms boundary
+tolerance and nobody has measured whether that is generous or optimistic. If
+two trained annotators agree to 40 ms, a model claiming 250 has slack to
+justify. If they disagree by 300, the target needs revisiting before anything
+is trained.
+
+### 3. Did they give it the same label?
+
+Cohen's kappa and nominal Krippendorff's alpha over matched events only, the
+per-class confusion matrix, and specific agreement for the classes §17 predicts
+will be hardest: `false_start`, `self_repair`, and the contextual roles.
+
+Contextual roles are measured **separately from classes**. Two annotators can
+agree that "este" is a `lexical_filler` and disagree about whether it is a
+`filler` or `semantic` — folding that into the class figure would hide a
+problem with the role definitions behind a class that looks agreed.
+
+### On Krippendorff's alpha for unitizing
+
+Nominal alpha over matched events is implemented. Alpha-**u**, the version that
+measures whether two annotators segmented a continuum the same way without
+assuming shared units, is not — its difference function is intricate, there is
+no widely-trusted Python implementation to check against, and a subtly wrong
+alpha-u in a thesis is worse than an absent one.
+
+Stages 1 and 2 answer what alpha-u answers, in numbers whose computation is
+readable in `corpus/agreement/measures.py`. If a reviewer asks for alpha-u
+specifically, the two honest routes are to integrate an established
+implementation and cite it, or to have the methodologist specify the difference
+function and implement it against worked examples. See
+`corpus/agreement/report.py`.
+
+## The same matching rule is used to score the model
+
+The matching in `corpus.agreement.matching` is the one the model will be scored
+with against the held-out set. That is deliberate and it is the most useful
+property here: it puts the human ceiling and the model's F1 on one scale.
+
+If two trained annotators reach 0.78 positive specific agreement on
+`false_start`, then NFR-002's macro-F1 target of 0.80 has to be read against
+0.78 rather than against 1.0 — and a model reporting 0.80 on that class is at
+the ceiling, not below the target.
+
+## Adjudication
+
+After both annotators finish and the report is produced:
+
+1. Walk every disagreement together.
+2. Record each in the disagreement log (`DISAGREEMENT_LOG.md`) with the audio
+   position, both readings, and what was decided.
+3. Where the disagreement is a manual problem rather than a judgement call,
+   amend the definition in `domain/shared/taxonomy.py`, bump
+   `TAXONOMY_VERSION`, and regenerate the manual.
+4. Produce the adjudicated annotation (`annotation_pass: adjudicated`). It is
+   excluded from agreement computation by construction — including it would
+   measure the resolution process rather than the annotators.
+
+**A taxonomy change requires re-running Pilot B.** Amending a definition and
+keeping the agreement figure measured under the old one reports a number for a
+manual that no longer exists.
+
+## Exit criterion
+
+Phase 0 closes — properly this time — when all four hold:
+
+- [ ] Two annotators have independently annotated Pilot B.
+- [ ] The agreement report is produced, committed, and its numbers are stable
+      enough to interpret (the report flags samples too small for kappa).
+- [ ] Every disagreement is in the log, resolved or explicitly marked
+      unresolved with the reason.
+- [ ] The manual reflects whatever the disagreements demanded, at its resulting
+      version.
+
+Only then does corpus recruitment start.
+
+## Commands
+
+```bash
+# One template per annotator per recording. Pseudonyms only.
+corpus template pilot-001-ana.eaf \
+  --recording-id pilot-001 --speaker P-001 --annotator ana \
+  --media pilot-001.wav
+
+corpus template pilot-001-beto.eaf \
+  --recording-id pilot-001 --speaker P-001 --annotator beto \
+  --media pilot-001.wav
+
+# After annotation.
+corpus validate pilot-001-ana.eaf pilot-001-beto.eaf
+corpus agreement pilot-001-ana.eaf pilot-001-beto.eaf
+corpus agreement pilot-001-ana.eaf pilot-001-beto.eaf --json > agreement-pilot-001.json
+```
