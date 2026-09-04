@@ -1,0 +1,16 @@
+# Normalize line endings in the repository; check out native on Windows.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Golden fixtures are compared byte for byte. Any translation here would make a
+# contract test pass on one platform and fail on another.
+tests/contract/golden/** -text
+*.wav binary
+*.mp4 binary
+*.webm binary

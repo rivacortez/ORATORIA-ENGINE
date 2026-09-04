@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Self
 
 from evidence_engine.domain.shared.errors import InvalidIdentifier
 
@@ -30,8 +31,13 @@ class Identifier:
         return self.value
 
     @classmethod
-    def generate(cls) -> Identifier:
+    def generate(cls) -> Self:
         """Mint a fresh identifier.
+
+        Returns ``Self``, not ``Identifier``: ``SessionId.generate()`` has to
+        type as a ``SessionId``, otherwise every call site would need a cast
+        and the nominal typing this module exists for would evaporate at the
+        one place identifiers are created.
 
         Randomness is taken here rather than injected because these values are
         opaque references with no behaviour attached. Reproducibility (QA-05)
