@@ -30,8 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      # Pinned to an exact release, not a moving major tag: setup-uv stopped
+      # publishing moving majors after v7, and pinning exactly is the better
+      # habit anyway - a moving tag can change under a build between runs.
+      # v6 targets Node 20, which the runners now force onto 24 with a
+      # deprecation notice; every release from v7 on targets Node 24 natively.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
+          # v10 changed the default to "auto", which skips the cache on pushes
+          # to a branch. This repository pushes to main constantly, so caching
+          # there is exactly where the time is saved.
           enable-cache: true
 
       - name: Install
@@ -113,8 +121,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      # Pinned to an exact release, not a moving major tag: setup-uv stopped
+      # publishing moving majors after v7, and pinning exactly is the better
+      # habit anyway - a moving tag can change under a build between runs.
+      # v6 targets Node 20, which the runners now force onto 24 with a
+      # deprecation notice; every release from v7 on targets Node 24 natively.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
+          # v10 changed the default to "auto", which skips the cache on pushes
+          # to a branch. This repository pushes to main constantly, so caching
+          # there is exactly where the time is saved.
           enable-cache: true
 
       - name: Start MinIO
