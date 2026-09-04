@@ -28,9 +28,9 @@ jobs:
       ENGINE_RUNTIME_MODE: deterministic
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
@@ -111,9 +111,9 @@ jobs:
       ENGINE_TEST_S3_SECRET_KEY: engine-secret
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
@@ -137,7 +137,9 @@ jobs:
             fi
             sleep 1
           done
-          docker run --rm --network host minio/mc:latest sh -c "
+          # `--entrypoint sh`: the mc image sets `mc` as its entrypoint, so
+          # without this the shell command is parsed as mc arguments.
+          docker run --rm --network host --entrypoint sh minio/mc:latest -c "
             mc alias set local http://localhost:9000 engine engine-secret &&
             mc mb --ignore-existing local/evidence-engine
           "
