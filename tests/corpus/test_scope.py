@@ -85,3 +85,43 @@ def test_the_protocol_does_not_claim_the_visual_taxonomy_was_validated() -> None
     text = PROTOCOL.read_text(encoding="utf-8")
 
     assert "enters Phase 5 unvalidated" in text
+
+
+def test_the_exit_criterion_closes_only_the_speech_half() -> None:
+    """The contradiction a reviewer found: the protocol excluded the visual
+    classes and then said Pilot B closes Phase 0.
+
+    A speech-only pilot cannot close a multimodal phase, and recording that it
+    did would put "validated" in the project's own tracker against something
+    nobody looked at. The two halves are now tracked separately so the sentence
+    cannot be written without naming one.
+    """
+    text = PROTOCOL.read_text(encoding="utf-8")
+
+    assert "### Phase 0 — speech taxonomy" in text
+    assert "### Phase 0 — visual taxonomy" in text
+    assert "must name which half" in text
+
+    # The unqualified claim, in the exact form it took before.
+    assert "Phase 0 closes — properly this time —" not in text
+
+
+def test_the_visual_half_is_recorded_as_not_started() -> None:
+    """An open checklist, not a promise. If somebody ticks these without doing
+    the work, at least the work is written down to be ticked against."""
+    text = PROTOCOL.read_text(encoding="utf-8")
+
+    visual = text.split("### Phase 0 — visual taxonomy", 1)[1]
+    assert "Nothing below has been attempted" in visual
+    # Every box in the visual section is still open.
+    assert "- [x]" not in visual.split("##", 1)[0]
+
+
+def test_the_protocol_states_the_enforced_taxonomy_rule() -> None:
+    """The document and `compare` used to disagree: the protocol said any
+    taxonomy change requires re-running the pilot, and the code tolerated a
+    minor difference with a note."""
+    text = PROTOCOL.read_text(encoding="utf-8")
+
+    assert "A taxonomy change requires re-running Pilot B" in text
+    assert "at all" in text.split("A taxonomy change requires", 1)[1][:900]

@@ -67,20 +67,38 @@ jobs:
         run: uv run lint-imports
 
       - name: Tests
-        # NFR-021 asks for 80% branch coverage on the deterministic logic in
-        # the domain and application layers. The gate is set at 88 because the
-        # suite sits at 90: a gate at the requirement lets coverage decay ten
-        # points before anyone hears about it. Adapters are covered by the
-        # contract and integration suites rather than by this gate, and model
-        # quality is validated through benchmarks, not code coverage.
+        # Coverage measured here, gated in the next step. No --cov-fail-under:
+        # one gate over both populations is what the separate gates below
+        # replace.
         run: |
           uv run pytest \
             --cov=evidence_engine.domain \
             --cov=evidence_engine.application \
             --cov=corpus \
             --cov-branch \
-            --cov-report=term-missing \
-            --cov-fail-under=88
+            --cov-report=term-missing
+
+      - name: Coverage gates
+        # Two populations, two gates, because one gate over both hides drift in
+        # whichever is smaller and better covered. Concretely: the engine sits
+        # at 90% over 2165 statements and the corpus at 97% over 861. Under the
+        # single 88% gate this replaces, the engine could fall from 90% to 84%
+        # before the combined figure dropped to 88 - six points of decay in the
+        # deterministic logic NFR-021 is actually about, invisible because the
+        # research tooling was carrying it.
+        #
+        # NFR-021 asks for 80% branch coverage on the domain and application
+        # layers. Each gate is set a couple of points under its current figure
+        # rather than at the requirement: a gate at the requirement lets
+        # coverage decay ten points before anyone hears about it. Adapters are
+        # covered by the contract and integration suites rather than by these
+        # gates, and model quality is validated through benchmarks, not code
+        # coverage.
+        run: |
+          echo "--- engine: domain + application (NFR-021) ---"
+          uv run coverage report --include='*/evidence_engine/*' --fail-under=88
+          echo "--- corpus: annotation and agreement tooling ---"
+          uv run coverage report --include='*/corpus/*' --fail-under=95
 
       - name: Phase 2 exit criterion
         # Called out as its own step so a failure names the phase it blocks

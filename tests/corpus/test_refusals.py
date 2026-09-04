@@ -16,6 +16,7 @@ import pytest
 
 from corpus.agreement.report import (
     IncompatibleVersions,
+    InvalidReportParameters,
     NotIndependent,
     RefusedComparison,
     UnusableAnnotation,
@@ -25,7 +26,7 @@ from corpus.cli.main import main
 from corpus.io.elan import ElanError, WouldOverwrite, read, write_template
 from corpus.schema.records import SCHEMA_VERSION, AnnotatedRecording, AnnotationPass
 from evidence_engine.domain.shared.provenance import SemanticVersion
-from evidence_engine.domain.shared.taxonomy import SpeechEventType
+from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION, SpeechEventType
 from tests.corpus.conftest import annotation, recording, word
 
 FILLED = SpeechEventType.FILLED_PAUSE
@@ -108,12 +109,22 @@ def test_a_minor_schema_difference_is_allowed() -> None:
     assert compare(left, right).matched == 1
 
 
-def test_files_under_different_major_taxonomy_versions_are_refused() -> None:
-    """A class has been redefined or removed between them.
+@pytest.mark.parametrize(
+    "other",
+    [
+        SemanticVersion(2, 0, 0),  # a class redefined or removed
+        SemanticVersion(1, 1, 0),  # a class added, or a definition amended
+        SemanticVersion(1, 0, 1),  # a wording fix that changed a judgement call
+    ],
+    ids=["major", "minor", "patch"],
+)
+def test_any_taxonomy_difference_is_refused(other: SemanticVersion) -> None:
+    """Not just a major difference.
 
-    The 'disagreement' would be two people correctly following two different
-    manuals. §17 of the protocol handles that by re-running the pilot, not by
-    reporting a number for a manual that no longer exists.
+    The additive-class argument for tolerating a minor bump does not cover a
+    class whose *meaning* moved, and the protocol is unambiguous: a taxonomy
+    change requires re-running Pilot B. Two annotators reading two versions of
+    the manual are not two annotators reading the manual.
     """
     left = recording(
         "ana",
@@ -123,31 +134,141 @@ def test_files_under_different_major_taxonomy_versions_are_refused() -> None:
     right = recording(
         "beto",
         [annotation(FILLED, 1_050, 2_050, "beto")],
-        taxonomy_version=SemanticVersion(2, 0, 0),
+        taxonomy_version=other,
     )
 
-    with pytest.raises(IncompatibleVersions, match="taxonomy"):
+    with pytest.raises(IncompatibleVersions, match="different manuals"):
         compare(left, right)
 
 
-def test_a_minor_taxonomy_difference_is_a_note_rather_than_a_refusal() -> None:
-    """Additive: the class list grew, so the comparison still stands - but a
-    class added between them was available to only one of them."""
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_a_missing_taxonomy_version_is_refused(side: str) -> None:
+    """The hole the reviewer found.
+
+    `_parse_version` turned an absent or unparseable version into `None`, and
+    the guard returned early when either side was `None` - so a file recording
+    no manual at all sailed past the check written to compare manuals. `None`
+    compares unequal to nothing; a check written against a value stops being a
+    check the moment the value goes missing.
+    """
+    versions = {"left": SemanticVersion(1, 0, 0), "right": SemanticVersion(1, 0, 0)}
+    versions[side] = None  # type: ignore[assignment]
+
     left = recording(
-        "ana",
-        [annotation(FILLED, 1_000, 2_000, "ana")],
-        taxonomy_version=SemanticVersion(1, 0, 0),
+        "ana", [annotation(FILLED, 1_000, 2_000, "ana")], taxonomy_version=versions["left"]
     )
     right = recording(
-        "beto",
-        [annotation(FILLED, 1_050, 2_050, "beto")],
-        taxonomy_version=SemanticVersion(1, 1, 0),
+        "beto", [annotation(FILLED, 1_050, 2_050, "beto")], taxonomy_version=versions["right"]
     )
 
-    report = compare(left, right)
+    with pytest.raises(IncompatibleVersions, match="no taxonomy version"):
+        compare(left, right)
 
-    assert report.matched == 1
-    assert any("taxonomy versions" in note for note in report.notes)
+
+def test_identical_taxonomy_versions_are_the_normal_case() -> None:
+    left, right = _pair()
+
+    assert compare(left, right).matched == 1
+
+
+def test_an_eaf_without_a_taxonomy_version_is_refused_at_read_time(tmp_path: Path) -> None:
+    """Caught at the file boundary too, not only at comparison.
+
+    An annotator who deletes the property gets told which file and which
+    property, rather than a refusal three commands later about two files.
+    """
+    path = tmp_path / "t.eaf"
+    write_template(
+        path,
+        recording_id="pilot-001",
+        speaker_pseudonym="P-001",
+        annotator_id="ana",
+        media_url="pilot-001.wav",
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace('NAME="taxonomy_version"', 'NAME="unused"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ElanError, match="taxonomy_version"):
+        read(path)
+
+
+def test_an_unparseable_taxonomy_version_is_refused_rather_than_dropped(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "t.eaf"
+    write_template(
+        path,
+        recording_id="pilot-001",
+        speaker_pseudonym="P-001",
+        annotator_id="ana",
+        media_url="pilot-001.wav",
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f'"taxonomy_version">{TAXONOMY_VERSION}<', '"taxonomy_version">v1<'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ElanError, match="not a taxonomy version"):
+        read(path)
+
+
+# ---------------------------------------------------------------------------
+# Reporting parameters
+# ---------------------------------------------------------------------------
+
+
+def test_a_negative_boundary_review_threshold_is_refused() -> None:
+    """It turns perfect agreement into a worklist.
+
+    `abs(error) > threshold` holds for every matched pair once the threshold
+    goes below zero, so two annotators who drew identical boundaries come back
+    with "start off by 0 ms, end by 0 ms (over the -1 ms NFR-004 target)" for
+    every event they agreed on.
+    """
+    left, right = _pair()
+
+    with pytest.raises(InvalidReportParameters, match="non-negative"):
+        compare(left, right, boundary_review_ms=-1)
+
+
+def test_a_zero_boundary_review_threshold_is_allowed() -> None:
+    """Strict but meaningful: list every pair whose boundaries differ at all."""
+    left = recording("ana", [annotation(FILLED, 1_000, 2_000, "ana")])
+    right = recording("beto", [annotation(FILLED, 1_010, 2_000, "beto")])
+
+    report = compare(left, right, boundary_review_ms=0)
+
+    assert [d.kind.value for d in report.disagreements] == ["boundary"]
+
+
+def test_exact_agreement_at_a_zero_threshold_lists_nothing() -> None:
+    left = recording("ana", [annotation(FILLED, 1_000, 2_000, "ana")])
+    right = recording("beto", [annotation(FILLED, 1_000, 2_000, "beto")])
+
+    assert compare(left, right, boundary_review_ms=0).disagreements == ()
+
+
+def test_the_cli_reports_a_bad_parameter_instead_of_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An annotator seeing a Python traceback reads "the tool is broken", not
+    "that threshold means nothing"."""
+    from tests.corpus.test_cli import _annotated
+
+    left = _annotated(tmp_path, "ana", offset_ms=0, event="filled_pause")
+    right = _annotated(tmp_path, "beto", offset_ms=80, event="filled_pause")
+
+    # Exit 2 is argparse's usage-error code, and that is what this is: the
+    # files are fine, the numbers asked for are not.
+    assert main(["agreement", str(left), str(right), "--iou", "0"]) == 2
+    assert "deliberately" in capsys.readouterr().err
+
+    assert main(["agreement", str(left), str(right), "--boundary-review-ms", "-1"]) == 2
+    assert "non-negative" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

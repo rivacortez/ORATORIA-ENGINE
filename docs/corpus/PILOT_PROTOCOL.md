@@ -227,9 +227,25 @@ After both annotators finish and the report is produced:
 keeping the agreement figure measured under the old one reports a number for a
 manual that no longer exists.
 
+This is enforced, not just written down: `compare` refuses two files whose
+`taxonomy_version` differs **at all** — major, minor or patch — and refuses a
+file that records no version. An earlier version tolerated a minor difference
+and printed a note, which contradicted this paragraph; the additive-class
+argument for tolerating it does not cover a class whose *meaning* moved in a
+minor release, and a note at the bottom of a report does not survive being
+copied into a results table.
+
 ## Exit criterion
 
-Phase 0 closes — properly this time — when all four hold:
+**What closes here is "Phase 0 — speech taxonomy", not Phase 0.** The scope
+section above excludes the nine visual classes, so a pilot that never showed an
+annotator a video frame cannot close a multimodal phase. Closing "Phase 0" on
+the strength of this would be recording, in the project's own tracker, that
+something was validated which was not looked at.
+
+### Phase 0 — speech taxonomy
+
+Closes when all four hold:
 
 - [ ] Two annotators have independently annotated Pilot B.
 - [ ] The agreement report is produced, committed, and its numbers are stable
@@ -239,7 +255,29 @@ Phase 0 closes — properly this time — when all four hold:
 - [ ] The manual reflects whatever the disagreements demanded, at its resulting
       version.
 
-Only then does corpus recruitment start.
+Only then does corpus recruitment start. Recruitment is an audio activity, so
+it is not blocked by the visual half remaining open.
+
+### Phase 0 — visual taxonomy
+
+**Open. Nothing below has been attempted.**
+
+- [ ] Decide whether the visual classes are events at all. `insufficient_lighting`
+      is a continuous condition; two annotators marking it over overlapping
+      stretches are unitizing, not detecting, and the matching in
+      `corpus.agreement.matching` is the wrong instrument for that.
+- [ ] Extend the annotation record, or define a second one, with whatever a
+      visual observation actually needs — it has no words tier to check
+      against, no contextual role and no lexical expression.
+- [ ] Write the agreement conventions that follow from that decision.
+- [ ] Run a visual pilot with its own protocol.
+
+Scheduled for Phase 5, when the corpus exists and a taxonomy error costs
+re-annotating one modality rather than re-recording everything.
+
+**Any claim that "Phase 0 is closed" must name which half.** The two are
+tracked separately here precisely so the sentence cannot be written without
+one.
 
 ## Commands
 

@@ -107,11 +107,13 @@ def read(path: Path) -> AnnotatedRecording:
     root = tree.getroot()
     properties = _properties(root)
 
-    # Before anything is interpreted. Every step below reads the tiers under
-    # this version's rules, so a file written under a shape this tool does not
-    # know has to be turned away here - otherwise it fails somewhere deeper
-    # with a message about time slots, and the schema never gets mentioned.
+    # Both versions, before anything is interpreted. Every step below reads the
+    # tiers under the schema's rules and resolves classes under the taxonomy's,
+    # so a file this tool cannot read has to be turned away here - otherwise it
+    # fails somewhere deeper with a message about time slots and neither
+    # version is ever mentioned.
     schema_version = _required_schema_version(properties, path)
+    taxonomy_version = _required_taxonomy_version(properties, path)
 
     slots = _time_slots(root)
     annotator_id = _required_property(properties, PROP_ANNOTATOR, path)
@@ -142,7 +144,7 @@ def read(path: Path) -> AnnotatedRecording:
         words=words,
         disfluencies=disfluencies,
         schema_version=schema_version,
-        taxonomy_version=_parse_version(properties.get(PROP_TAXONOMY)),
+        taxonomy_version=taxonomy_version,
     )
 
 
@@ -300,16 +302,34 @@ def _duration(
     return duration
 
 
-def _parse_version(raw: str | None) -> SemanticVersion | None:
-    if not raw:
-        return None
+def _required_taxonomy_version(properties: dict[str, str], path: Path) -> SemanticVersion:
+    """The taxonomy the annotator worked under. Required, and strictly parsed.
+
+    This used to be lenient - absent or unparseable became ``None``, on the
+    reasoning that an annotation whose taxonomy version is unreadable is still
+    usable evidence and the report could flag the gap. That was wrong, and the
+    way it was wrong is instructive: ``None`` does not compare unequal to
+    anything, so a file with no version passed straight through the comparison
+    guard and got measured against a file from a different manual. A field that
+    silently becomes "unknown" is worse than a field that is missing, because
+    the checks downstream are written against the value and not against its
+    absence.
+
+    Strict rather than one-major-version tolerant, matching
+    ``EvidenceDocument``, which refuses a manifest whose taxonomy is not
+    exactly this build's. The protocol is stricter still: *any* taxonomy change
+    requires re-running the pilot, because a definition amended in a minor
+    release is a definition two annotators did not share.
+    """
+    raw = _required_property(properties, PROP_TAXONOMY, path)
     try:
         return SemanticVersion.parse(raw)
-    except Exception:
-        # Recorded as absent rather than rejected: an annotation whose taxonomy
-        # version is unreadable is still usable evidence, and the agreement
-        # report flags the gap rather than refusing the file.
-        return None
+    except Exception as error:
+        raise ElanError(
+            f"{path.name}: '{raw}' is not a taxonomy version. It records which "
+            "manual the annotator worked under, and agreement between two manuals "
+            "is not agreement between two annotators."
+        ) from error
 
 
 # ---------------------------------------------------------------------------

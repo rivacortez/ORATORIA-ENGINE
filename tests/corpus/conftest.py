@@ -21,7 +21,11 @@ from corpus.schema.records import (
     Word,
 )
 from evidence_engine.domain.shared.provenance import SemanticVersion
-from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventType
+from evidence_engine.domain.shared.taxonomy import (
+    TAXONOMY_VERSION,
+    ContextualRole,
+    SpeechEventType,
+)
 
 
 def annotation(
@@ -59,15 +63,21 @@ def recording(
     duration_ms: int | None = None,
     annotation_pass: AnnotationPass = AnnotationPass.FIRST,
     schema_version: SemanticVersion = SCHEMA_VERSION,
-    taxonomy_version: SemanticVersion | None = None,
+    taxonomy_version: SemanticVersion | None = TAXONOMY_VERSION,
 ) -> AnnotatedRecording:
     """A record the validator accepts, unless a test deliberately breaks it.
 
+    Two defaults exist so that a test about agreement mathematics is about
+    agreement mathematics.
+
     The words tier is synthesized rather than left empty. An empty transcript
     is a validation *error* - lexical classes cannot be checked against
-    anything - so a fixture without one is a file `compare` now refuses, and
-    every agreement test would be exercising the refusal instead of the
-    mathematics.
+    anything - so a fixture without one is a file `compare` refuses.
+
+    `taxonomy_version` defaults to the published one rather than to `None`,
+    for the same reason: `compare` now requires both files to record a manual
+    and to record the same one. `None` is still reachable, and a test passes it
+    deliberately to check that the refusal fires.
     """
     resolved_words = tuple(words) if words is not None else _implied_words(annotations)
     ends = [w.interval.end_ms for w in resolved_words]

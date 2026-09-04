@@ -111,6 +111,15 @@ WATCHED_CLASSES: tuple[SpeechEventType, ...] = (
 )
 
 
+class InvalidReportParameters(Exception):
+    """A reporting parameter would make the report say something false.
+
+    Separate from ``RefusedComparison``: that one is about the *files*, this is
+    about how they were asked to be compared. A caller can fix this one by
+    typing a different number.
+    """
+
+
 class RefusedComparison(Exception):
     """These two files cannot produce an interpretable agreement figure.
 
@@ -297,6 +306,7 @@ def compare(
     Refuses anything that would produce a number about the wrong thing. See
     ``RefusedComparison`` and its subclasses for what is turned away and why.
     """
+    _require_valid_review_threshold(boundary_review_ms)
     _require_comparable(left, right)
 
     matching = match(
@@ -446,6 +456,24 @@ def _disagreements(matching: Matching, boundary_review_ms: int) -> tuple[Disagre
     return tuple(found)
 
 
+def _require_valid_review_threshold(boundary_review_ms: int) -> None:
+    """A negative threshold makes perfect agreement look like disagreement.
+
+    ``abs(error) > threshold`` is true for every matched pair once the
+    threshold goes below zero, so two annotators who drew identical boundaries
+    come back with a worklist reading "start off by 0 ms, end by 0 ms (over the
+    -1 ms NFR-004 target)" for every event they agreed on. Nothing crashes and
+    nothing warns; the adjudication session just has a hundred items in it that
+    are not disagreements.
+    """
+    if boundary_review_ms < 0:
+        raise InvalidReportParameters(
+            f"boundary review threshold must be non-negative, got {boundary_review_ms} ms. "
+            "Below zero every matched pair is listed as a boundary disagreement, "
+            "including the ones where the annotators agreed exactly."
+        )
+
+
 def _require_comparable(left: AnnotatedRecording, right: AnnotatedRecording) -> None:
     """Everything that has to hold before a coefficient means anything.
 
@@ -458,7 +486,11 @@ def _require_comparable(left: AnnotatedRecording, right: AnnotatedRecording) -> 
             f"{left.recording_id!r} and {right.recording_id!r} are different recordings"
         )
     if left.annotator_id == right.annotator_id:
-        raise MismatchedRecordings(
+        # `NotIndependent`, not `MismatchedRecordings`. The two files describe
+        # the same recording perfectly well; what they do not describe is two
+        # people, which is the same failure as comparing against an adjudicated
+        # pass and belongs under the same name.
+        raise NotIndependent(
             f"both files are by {left.annotator_id!r}; agreement is between two people"
         )
 
@@ -486,21 +518,38 @@ def _require_comparable(left: AnnotatedRecording, right: AnnotatedRecording) -> 
 def _require_comparable_taxonomies(left: AnnotatedRecording, right: AnnotatedRecording) -> None:
     """A major taxonomy difference is refused; a minor one becomes a note.
 
-    The asymmetry is the point. Within a major version the class list is
-    additive, so the two annotators had the same words available for the same
-    things and the report is about them. Across a major version a class has
-    been redefined or removed, and the "disagreement" is two people correctly
-    following two different manuals - which §17 of the protocol handles by
-    re-running the pilot, not by reporting a number.
+    Exactly equal, not one-major-version compatible.
+
+    An earlier version of this allowed a minor difference and reported a note,
+    reasoning that the class list is additive within a major version. That
+    contradicted the protocol, which says *any* taxonomy change requires
+    re-running the pilot - and the protocol is right: a definition amended in a
+    minor release is a definition the two annotators did not share, and the
+    additive-class argument does not cover a class whose *meaning* moved. It
+    also matches ``EvidenceDocument``, which refuses a manifest whose taxonomy
+    is not exactly this build's.
+
+    A missing version is refused rather than skipped. ``None`` compares unequal
+    to nothing, so an early return on absence let a file with no recorded
+    manual pass straight through this guard - which is how a check written
+    against a value becomes no check at all when the value goes missing.
     """
-    if left.taxonomy_version is None or right.taxonomy_version is None:
-        return
-    if not left.taxonomy_version.is_compatible_with(right.taxonomy_version):
+    for side, recording in (("left", left), ("right", right)):
+        if recording.taxonomy_version is None:
+            raise IncompatibleVersions(
+                f"the {side} file ({recording.annotator_id!r}) records no taxonomy "
+                "version, so there is no way to establish that the two annotators "
+                "worked from the same manual. Agreement between two manuals is not "
+                "agreement between two annotators."
+            )
+
+    if left.taxonomy_version != right.taxonomy_version:
         raise IncompatibleVersions(
             f"the annotators worked under taxonomy {left.taxonomy_version} and "
-            f"{right.taxonomy_version}. Across a major version a class has been "
-            "redefined or removed, so this would measure the manual change rather "
-            "than the annotators. Re-run the pilot under one version."
+            f"{right.taxonomy_version}. Any difference means they were reading "
+            "different manuals, so this would measure the change rather than the "
+            "annotators. The protocol's answer is to re-run the pilot under one "
+            "version, not to report a number with a caveat."
         )
 
 
@@ -582,17 +631,11 @@ def _notes(
     """Conditions that make the numbers above mean less than they appear to."""
     notes: list[str] = []
 
-    if left.taxonomy_version != right.taxonomy_version:
-        # A *major* difference is refused outright in `_require_comparable`.
-        # What reaches here is a minor or patch difference, or a file that did
-        # not record a version at all: additive changes, where the two
-        # annotators had the same words available for the same things.
-        notes.append(
-            f"the annotators worked under different taxonomy versions "
-            f"({left.taxonomy_version} and {right.taxonomy_version}). Same major "
-            "version, so the class list is additive and the comparison stands - but "
-            "a class added between them was available to only one of them"
-        )
+    # No note about differing taxonomy versions: `_require_comparable` now
+    # refuses any difference at all, so a report that exists was produced under
+    # one manual. The note used to cover the minor-version case, and a note is
+    # the wrong instrument for it - it survives exactly as long as the person
+    # reading the report, and not into the table they paste the number into.
 
     if matching.matched_count < 20:
         notes.append(

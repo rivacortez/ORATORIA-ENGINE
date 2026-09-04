@@ -22,10 +22,12 @@ from typing import Any
 from corpus.agreement.matching import (
     DEFAULT_IOU_THRESHOLD,
     DEFAULT_TOLERANCE_MS,
+    InvalidMatchParameters,
     MatchCriterion,
 )
 from corpus.agreement.report import (
     AgreementReport,
+    InvalidReportParameters,
     Reading,
     RefusedComparison,
     compare,
@@ -56,6 +58,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         # files are readable and must not be compared".
         print(f"refused: {error}", file=sys.stderr)
         return 3
+    except (InvalidMatchParameters, InvalidReportParameters) as error:
+        # Exit 2, argparse's code for a usage error, because that is what this
+        # is: the files are fine and the numbers asked for are not. Caught here
+        # rather than left to propagate - `corpus agreement --iou 0` used to
+        # print a Python traceback at an annotator, which reads as "the tool is
+        # broken" rather than "that threshold means nothing".
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
 
 def _parser() -> argparse.ArgumentParser:
