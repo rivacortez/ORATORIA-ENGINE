@@ -10,13 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The battery runs against the memory backend and the deterministic
-  # runtimes. Phase 2's exit criterion is defined "without model inference"
-  # precisely so that it can be checked on every commit rather than only where
-  # Postgres, Redis, MinIO and a GPU all happen to be available.
-  ENGINE_BACKEND: memory
-  ENGINE_RUNTIME_MODE: deterministic
-  # Test-only values. Real secrets come from the secret manager (spec 15.2) and
+  # Test-only values. Real secrets come from the secret manager (§15.2) and
   # never from a workflow file.
   ENGINE_API_KEY_PEPPER: ci-pepper-value-at-least-32-characters
   ENGINE_STREAM_TOKEN_SIGNING_KEY: ci-signing-key-at-least-32-characters
@@ -24,7 +18,15 @@ env:
 
 jobs:
   battery:
+    # The memory backend and the deterministic runtimes. Phase 2's exit
+    # criterion is defined "without model inference" precisely so this can run
+    # on every commit rather than only where Postgres, Redis, MinIO and a GPU
+    # all happen to be available.
     runs-on: ubuntu-latest
+    env:
+      ENGINE_BACKEND: memory
+      ENGINE_RUNTIME_MODE: deterministic
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,30 +35,34 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv pip install --system -e ".[dev]"
+        # `uv sync` into a project venv, not `uv pip install --system`. The
+        # runner's interpreter is externally managed (PEP 668) and refuses a
+        # system install; `--break-system-packages` would work and would be
+        # exactly the wrong lesson to encode in CI.
+        run: uv sync --all-extras --frozen
 
       - name: Lint
         run: |
-          ruff check src tests
-          ruff format --check src tests
+          uv run ruff check src tests scripts
+          uv run ruff format --check src tests scripts
 
       - name: Types
-        run: mypy
+        run: uv run mypy
 
       - name: Architecture
         # Six contracts, each guarding a claim the spec makes about the shape
         # of the system. A broken one means the claim is no longer true.
-        run: lint-imports
+        run: uv run lint-imports
 
       - name: Tests
         # NFR-021 asks for 80% branch coverage on the deterministic logic in
         # the domain and application layers. The gate is set at 88 because the
-        # suite currently sits at 90: a gate at the requirement lets coverage
-        # decay ten points before anyone hears about it. Adapters are covered
-        # by the contract and integration suites rather than by this gate, and
-        # model quality is validated through benchmarks, not code coverage.
+        # suite sits at 90: a gate at the requirement lets coverage decay ten
+        # points before anyone hears about it. Adapters are covered by the
+        # contract and integration suites rather than by this gate, and model
+        # quality is validated through benchmarks, not code coverage.
         run: |
-          pytest \
+          uv run pytest \
             --cov=evidence_engine.domain \
             --cov=evidence_engine.application \
             --cov-branch \
@@ -66,15 +72,15 @@ jobs:
       - name: Phase 2 exit criterion
         # Called out as its own step so a failure names the phase it blocks
         # rather than appearing as one red dot among a hundred.
-        run: pytest tests/contract -q
+        run: uv run pytest tests/contract -q
 
   integration:
     # The persistent adapters, against the real thing. Separate from `battery`
     # because it needs infrastructure, and because a failure here means
     # something different: the contracts still hold, but an adapter does not
-    # implement them. The three bugs this job exists to catch - a missing
+    # implement them. The three bugs this job exists to catch — a missing
     # foreign-key parent, a partial unique index violated by flush ordering,
-    # and missing object-store credentials - were all invisible in memory.
+    # and missing object-store credentials — were all invisible in memory.
     runs-on: ubuntu-latest
 
     services:
@@ -96,15 +102,8 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 2s --health-timeout 3s --health-retries 30
 
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: engine
-          MINIO_ROOT_PASSWORD: engine-secret
-          MINIO_DEFAULT_BUCKETS: evidence-engine
-        ports: ["9000:9000"]
-
     env:
+      ENGINE_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
       ENGINE_TEST_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
       ENGINE_TEST_REDIS_URL: redis://localhost:6379/1
       ENGINE_TEST_S3_ENDPOINT: http://localhost:9000
@@ -118,26 +117,47 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Start MinIO
+        # A step rather than a service container. The official `minio/minio`
+        # image needs `server /data` as its command, and a service container
+        # can override the entrypoint but not the arguments after it. The
+        # Bitnami image that needs no command was withdrawn from Docker Hub,
+        # which is what broke this job the first time it ran.
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=engine \
+            -e MINIO_ROOT_PASSWORD=engine-secret \
+            minio/minio:latest server /data
+          # Poll rather than sleep: a fixed wait is either too short on a slow
+          # runner or wasted on a fast one.
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
+              echo "minio ready"
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host minio/mc:latest sh -c "
+            mc alias set local http://localhost:9000 engine engine-secret &&
+            mc mb --ignore-existing local/evidence-engine
+          "
+
       - name: Install
-        run: uv pip install --system -e ".[dev]"
+        run: uv sync --all-extras --frozen
 
       - name: Migrate
         # Running the migration here rather than creating tables from the
         # models is deliberate: this is the only place the migration is
         # exercised end to end before a deployment relies on it.
-        env:
-          ENGINE_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
-        run: alembic upgrade head
+        run: uv run alembic upgrade head
 
       - name: Migration round-trip
         # up -> down -> up. A migration that cannot be reversed is a deployment
         # that cannot be rolled back, and the first time that matters is the
         # worst time to discover it.
-        env:
-          ENGINE_DATABASE_URL: postgresql+asyncpg://engine:engine@localhost:5432/engine
         run: |
-          alembic downgrade base
-          alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
 
       - name: Integration tests
-        run: pytest -m integration
+        run: uv run pytest -m integration -v
