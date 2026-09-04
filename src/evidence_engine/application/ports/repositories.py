@@ -122,6 +122,9 @@ class EvidenceBundle:
 
     run_id: RunId
     session_id: SessionId
+    #: Part of the storage key, not a filter applied afterwards. NFR-013's
+    #: scoping rule has to survive the write path as well as the read path.
+    tenant: TenantId
     transcript: Transcript
     quality: QualityReport
     speech_events: tuple[SpeechEvent, ...] = field(default_factory=tuple)
@@ -136,6 +139,20 @@ class EvidenceRepository(Protocol):
     async def store(self, bundle: EvidenceBundle) -> None: ...
 
     async def load(self, tenant: TenantId, run_id: RunId) -> EvidenceBundle | None: ...
+
+    async def store_document(self, document: EvidenceDocument, tenant: TenantId) -> None:
+        """Persist the published shape of a completed run.
+
+        Separate from ``store`` because the two shapes serve different masters:
+        the bundle is storage, the document is the public contract with its
+        provenance manifest. Merging them would let a change to the published
+        schema force a migration of historical rows, which NFR-017's
+        compatibility promise exists to avoid.
+
+        Only the completion path calls this. FR-029's guarantee about what a
+        document contains holds because exactly one code path assembles them.
+        """
+        ...
 
     async def load_document(
         self, tenant: TenantId, session_id: SessionId

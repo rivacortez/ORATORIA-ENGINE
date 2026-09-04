@@ -115,6 +115,17 @@ class StreamingCoordinator:
         self._visual_assembler = visual_assembler
         self._max_queue_depth = max_queue_depth
 
+    @property
+    def state(self) -> StreamingState:
+        """Everything accumulated so far.
+
+        Exposed for the completion path, which assembles the document from it.
+        Read-only by convention rather than by copy: the state holds thousands
+        of events by the end of a session and duplicating it per read would
+        cost more than the encapsulation buys.
+        """
+        return self._state
+
     # -- audio ------------------------------------------------------------
 
     async def ingest_audio(self, sequence: int, window: AudioWindow) -> ChunkVerdict:

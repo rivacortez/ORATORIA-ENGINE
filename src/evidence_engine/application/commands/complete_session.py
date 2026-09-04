@@ -110,6 +110,7 @@ class CompleteSession:
         bundle = EvidenceBundle(
             run_id=state.run_id,
             session_id=session_id,
+            tenant=caller.tenant,
             transcript=state.transcript,
             quality=quality,
             speech_events=speech_events,
@@ -145,6 +146,7 @@ class CompleteSession:
         )
 
         await self._evidence.store(bundle)
+        await self._evidence.store_document(document, caller.tenant)
 
         now_ms = self._clock.epoch_ms()
         session = session.mark_completed(now_ms)

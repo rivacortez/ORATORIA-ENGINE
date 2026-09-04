@@ -34,7 +34,7 @@ from evidence_engine.application.ports.repositories import (
     AuditRecord,
     SessionRepository,
 )
-from evidence_engine.application.ports.tokens import StreamTokenMinter
+from evidence_engine.application.ports.tokens import StreamGrant, StreamTokenMinter
 from evidence_engine.domain.sessions.capabilities import CapabilityRequest, negotiate
 from evidence_engine.domain.sessions.consent import ConsentReceipt, RetentionPolicy
 from evidence_engine.domain.sessions.session import AnalysisSession
@@ -151,9 +151,7 @@ class CreateSession:
         await self._sessions.add(session)
         await self._configuration.freeze(snapshot, session_id)
 
-        token, expires_at_ms = self._tokens.mint(
-            session_id, expires_at_ms=now_ms + STREAM_TOKEN_TTL_MS
-        )
+        token, expires_at_ms = self._mint_grant(caller, session_id, now_ms)
 
         await self._audit.record(
             AuditRecord(
@@ -184,12 +182,29 @@ class CreateSession:
         )
         if found is None:
             return None
-        token, expires_at_ms = self._tokens.mint(
-            found.id, expires_at_ms=self._clock.epoch_ms() + STREAM_TOKEN_TTL_MS
-        )
+        token, expires_at_ms = self._mint_grant(caller, found.id, self._clock.epoch_ms())
         return CreatedSession(
             session=found,
             stream_token=token,
             stream_token_expires_at_ms=expires_at_ms,
             was_existing=True,
         )
+
+    def _mint_grant(
+        self, caller: AuthenticatedCaller, session_id: SessionId, now_ms: int
+    ) -> tuple[str, int]:
+        """Sign a stream grant with the streaming subset of the caller's rights.
+
+        The grant carries the tenant, so the socket handler never has to look a
+        session up without one - which is what keeps NFR-013's scoping rule
+        true on the path that handles unauthenticated input.
+        """
+        expires_at_ms = now_ms + STREAM_TOKEN_TTL_MS
+        grant = StreamGrant(
+            session_id=session_id,
+            tenant=caller.tenant,
+            application=caller.application,
+            key_id=caller.key_id,
+            expires_at_ms=expires_at_ms,
+        )
+        return self._tokens.mint(grant), expires_at_ms
