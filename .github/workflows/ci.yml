@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The battery runs against the memory backend and the deterministic
+  # runtimes. Phase 2's exit criterion is defined "without model inference"
+  # precisely so that it can be checked on every commit rather than only where
+  # Postgres, Redis, MinIO and a GPU all happen to be available.
+  ENGINE_BACKEND: memory
+  ENGINE_RUNTIME_MODE: deterministic
+  # Test-only values. Real secrets come from the secret manager (spec 15.2) and
+  # never from a workflow file.
+  ENGINE_API_KEY_PEPPER: ci-pepper-value-at-least-32-characters
+  ENGINE_STREAM_TOKEN_SIGNING_KEY: ci-signing-key-at-least-32-characters
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  battery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Types
+        run: mypy
+
+      - name: Architecture
+        # Six contracts, each guarding a claim the spec makes about the shape
+        # of the system. A broken one means the claim is no longer true.
+        run: lint-imports
+
+      - name: Tests
+        # NFR-021: at least 80% branch coverage for the deterministic logic in
+        # the domain and application layers. The adapters are covered by the
+        # contract suite rather than by this gate - model quality is validated
+        # through benchmarks, not through code coverage.
+        run: |
+          pytest \
+            --cov=evidence_engine.domain \
+            --cov=evidence_engine.application \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+
+      - name: Phase 2 exit criterion
+        # Called out as its own step so a failure names the phase it blocks
+        # rather than appearing as one red dot among a hundred.
+        run: pytest tests/contract -q

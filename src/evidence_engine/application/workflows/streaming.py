@@ -179,22 +179,7 @@ class StreamingCoordinator:
             newly_final.append(finalized)
             self._record(finalized)
 
-        # Silent pauses are derived from finalized tokens only. Deriving them
-        # from provisional ones would publish a pause that vanishes when the
-        # recognizer fills the gap with a word it had not yet decoded.
-        pauses = silent_pauses(
-            self._state.transcript.final_tokens,
-            self._configuration.silence_threshold_ms,
-            self._speech_provenance(newly_final),
-            self._state.run_id,
-        )
-        for pause in pauses:
-            if pause.id.value in self._state.speech_events:
-                continue
-            final_pause = pause.finalize()
-            self._state.speech_events[pause.id.value] = final_pause
-            newly_final.append(final_pause)
-            self._record(final_pause)
+        newly_final.extend(self._derive_pauses(newly_final))
 
         await self._publish_transcript(is_final=True)
         await self._publish_speech(tuple(newly_final), is_final=True)
@@ -286,22 +271,58 @@ class StreamingCoordinator:
             payload={"type": event.type.value, "raw_text": event.raw_text},
         )
 
-    def _speech_provenance(self, events: Sequence[SpeechEvent]) -> Provenance:
+    def _derive_pauses(self, newly_final: Sequence[SpeechEvent]) -> list[SpeechEvent]:
+        """Derive silent pauses from the finalized transcript (FR-015).
+
+        Only from *finalized* tokens: deriving from provisional ones would
+        publish a pause that vanishes when the recognizer fills the gap with a
+        word it had not yet decoded, and §6.1 step 9 does not allow withdrawing
+        a finalized finding.
+
+        Returns nothing when there is nothing to derive from - fewer than two
+        finalized words cannot contain an interior gap. That case is real and
+        not an edge: a session whose speech runtime failed on its first window
+        reaches here with an empty transcript, and QA-02 requires that to
+        degrade rather than raise.
+        """
+        final_tokens = self._state.transcript.final_tokens
+        if len(final_tokens) < 2:
+            return []
+
+        provenance = self._speech_provenance(newly_final)
+        if provenance is None:
+            return []
+
+        derived: list[SpeechEvent] = []
+        for pause in silent_pauses(
+            final_tokens,
+            self._configuration.silence_threshold_ms,
+            provenance,
+            self._state.run_id,
+        ):
+            if pause.id.value in self._state.speech_events:
+                continue
+            final_pause = pause.finalize()
+            self._state.speech_events[pause.id.value] = final_pause
+            derived.append(final_pause)
+            self._record(final_pause)
+        return derived
+
+    def _speech_provenance(self, events: Sequence[SpeechEvent]) -> Provenance | None:
         """Provenance for events this layer derives rather than receives.
 
-        Borrowed from a real event of the same run so the derived pause carries
+        Borrowed from a real event of the same run so a derived pause carries
         the same model and configuration versions as the tokens it was computed
         from. Falling back to a synthetic provenance would make NFR-014's
-        traceability a half-truth for exactly the events nobody inspects.
+        traceability a half-truth for exactly the events nobody inspects, so
+        the honest answer when there is no real event to borrow from is
+        ``None`` - and the caller then derives nothing.
         """
         if events:
             return events[0].provenance
         for event in self._state.speech_events.values():
             return event.provenance
-        raise RuntimeError(
-            "no speech provenance available; a derived event cannot be built before "
-            "the runtime has produced at least one observation"
-        )
+        return None
 
     # -- publishing -------------------------------------------------------
 
