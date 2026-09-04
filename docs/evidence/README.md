@@ -1,6 +1,17 @@
 # Evidence
 
-Raw output from `scripts/capture_evidence.sh`, one file per capture.
+Raw output from the capture scripts, one file per run.
+
+| Prefix               | Script                        | What it establishes                                |
+| -------------------- | ----------------------------- | -------------------------------------------------- |
+| `battery-`           | `scripts/capture_evidence.sh` | Every gate, against real Postgres, Redis and MinIO |
+| `pilot-a-rehearsal-` | `scripts/rehearse_pilot_a.sh` | The annotators' command line composes end to end   |
+
+A `pilot-a-rehearsal-` file is **not** Pilot A. Pilot A involves two people,
+ten minutes of real audio and a question only humans can answer; the rehearsal
+runs the part of its checklist a machine can run, so the session with the
+annotators is spent on the taxonomy rather than on the tooling. Each capture
+says so in its own header and lists what is still outstanding.
 
 These exist because "the integration tests pass" is a claim, and a claim about
 a run nobody can point at is worth about as much as no claim. Each file carries
