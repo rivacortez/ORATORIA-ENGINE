@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from evidence_engine.application.ports.runtimes import (
     AudioWindow,
@@ -38,9 +38,6 @@ from evidence_engine.application.ports.runtimes import (
     WordHypothesis,
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    pass
 
 #: The artifact `BASELINE_PINS.md` pins, by identifier and revision. Hard-coded
 #: rather than configurable: a runtime whose checkpoint is a deployment setting
@@ -143,11 +140,24 @@ class WhisperSpeechRuntime:
         ).to(resolved.device)
         model.eval()
 
-        built = pipeline(
+        # Three `type: ignore`s, each for a real gap in transformers' own
+        # annotations rather than a doubt about the call.
+        #
+        # `pipeline` is annotated as a set of Literal overloads and this task
+        # string is resolved at runtime, so mypy picks the wrong one.
+        # `processor.tokenizer` and `.feature_extractor` are attached by
+        # `ProcessorMixin.__init__` from `attributes`, which no stub declares.
+        #
+        # Worth recording: these appeared only once the `managed` extra was
+        # installed. Before that, mypy could not find transformers at all and
+        # the `ignore_missing_imports` override silenced everything - so the
+        # gate was green on a machine that could not run this code and amber on
+        # one that could.
+        built = pipeline(  # type: ignore[call-overload]
             "automatic-speech-recognition",
             model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
+            tokenizer=processor.tokenizer,  # type: ignore[attr-defined]
+            feature_extractor=processor.feature_extractor,  # type: ignore[attr-defined]
             dtype=getattr(torch, resolved.dtype),
             device=resolved.device,
         )
