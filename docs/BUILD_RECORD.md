@@ -309,8 +309,14 @@ problem.
 | --- | --- | --- |
 | **No recorded corpus** | Phases 1 (execution), 4, 6 (evaluation), 9 | recording speakers |
 | **No human annotators** | Phase 0.5's exit criterion, Pilots A and B | two trained people |
-| **No model weights, torch not a dependency** | Phase 3, 4 | downloading the pins and adding the runtime |
-| **No provisioned inference host** | NFR-005/006/007, Phase 7's figures | provisioning one |
+| ~~No model weights~~ | — | **cleared 2026-09-05.** The pinned Whisper artifact was downloaded, its digest verified byte for byte, and run over real Peruvian audio on this machine. torch is still not a dependency *of the repository*, which is correct: the runtime lands with Phase 3. |
+| ~~No provisioned inference host~~ | — | **was never a blocker for a pilot.** `whisper-large-v3` fp16 is 3.09 GB and loads in 4.19 GiB on the workstation's 8 GB card. It remains a blocker for any *reported* figure, by this project's own rule. |
+
+**Two of the four turned out not to be blockers.** Recorded that way rather
+than quietly deleted: they were listed on the strength of an assumption that
+running a 1.5-billion-parameter model needs a rented GPU, and the assumption
+was never checked. The remaining two need people, and no amount of engineering
+substitutes for them.
 
 To start Pilot A, four audio confirmations and nothing else: recording from the
 named physical microphone, mono PCM, a declared sample rate and bit depth, and

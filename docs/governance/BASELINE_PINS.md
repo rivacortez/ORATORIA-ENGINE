@@ -203,6 +203,38 @@ running this exact pin over the human-annotated Peruvian held-out slice, and
 until it does exist NFR-001 has no number to be read against. That is the
 correct state for a target whose corpus has not been recorded.
 
+### Run once, on this machine, 2026-09-05
+
+The pins above were taken from metadata. This is what happened when the
+artifact was actually downloaded and run, on the annotation workstation, over
+real Peruvian audio (OpenSLR SLR73). It is a smoke test and **not a figure**:
+`REFERENCE_ENVIRONMENT.md` says a development laptop never sources a reported
+number, and nothing below enters a results table.
+
+| Checked | Result |
+| --- | --- |
+| Weights digest against the pin | **matches** — 3 087 130 976 bytes, sha256 `a8e94b85…`, byte for byte |
+| Loads at fp16 on 8 GB | yes — 4.19 GiB resident, 7.9 s to load |
+| CUDA build for this card | `torch 2.14.0+cu130` lists `sm_120`; the RTX 5060 is compute capability (12, 0) |
+| Pinned decoding applies | yes — forced `es`, beam 5, the temperature ladder, `condition_on_prev_tokens=False` all accepted |
+| **Word-level timestamps** | **yes** — 19 word offsets on a 7.3 s clip, e.g. `Hay` 0.00–0.92, `Gaceta` 2.30–2.78 |
+| Throughput | 0.46× real time, beam 5, fp16, batch 1 — indicative only, see above |
+
+**The word-timestamp row is the one that mattered.** NFR-004's 250 ms boundary
+target is unreachable from segment-level timestamps without a separate
+forced-alignment component, and this document asserted that none is needed
+because the checkpoint ships alignment heads. That was an argument from the
+model card. It is now an observation.
+
+**How to read them, which is not obvious.** `model.generate(...,
+return_timestamps="word", return_dict_in_generate=True)` returns a dict whose
+`segments` carry `start`, `end`, `tokens`, `idxs` and `result` — segment
+boundaries, **no per-word offsets**. The word offsets come from the
+`automatic-speech-recognition` pipeline with `return_timestamps="word"`, as
+`chunks`. Recorded because the first attempt took the obvious route and got
+zero offsets back without an error, which is exactly how a project ends up
+believing it has word timestamps and shipping segment ones.
+
 ### Two corrections a review round later
 
 Recorded rather than silently applied, because the pins document's own argument
