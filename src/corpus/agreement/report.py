@@ -516,7 +516,7 @@ def _require_comparable(left: AnnotatedRecording, right: AnnotatedRecording) -> 
 
 
 def _require_comparable_taxonomies(left: AnnotatedRecording, right: AnnotatedRecording) -> None:
-    """A major taxonomy difference is refused; a minor one becomes a note.
+    """Any taxonomy difference is refused, and so is a missing version.
 
     Exactly equal, not one-major-version compatible.
 

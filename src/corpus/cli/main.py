@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -282,18 +283,14 @@ def _reading_dict(reading: Reading | None) -> dict[str, Any] | None:
     The difference matters downstream: an empty object reads as "they marked
     something blank here", and the whole point of a missed event is that they
     marked nothing.
+
+    Derived from the dataclass rather than listing the fields. A hand-written
+    field list is a second definition of what a reading is, and the two drift
+    the first time somebody adds a field to `Reading` and does not think to
+    look here - which is exactly the moment the adjudication log quietly stops
+    carrying it.
     """
-    if reading is None:
-        return None
-    return {
-        "annotator": reading.annotator,
-        "start_ms": reading.start_ms,
-        "end_ms": reading.end_ms,
-        "event_type": reading.event_type,
-        "context_role": reading.context_role,
-        "raw_text": reading.raw_text,
-        "note": reading.note,
-    }
+    return None if reading is None else asdict(reading)
 
 
 def _print_report(report: AgreementReport) -> None:

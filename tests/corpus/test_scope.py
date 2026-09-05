@@ -125,3 +125,87 @@ def test_the_protocol_states_the_enforced_taxonomy_rule() -> None:
 
     assert "A taxonomy change requires re-running Pilot B" in text
     assert "at all" in text.split("A taxonomy change requires", 1)[1][:900]
+
+
+# ---------------------------------------------------------------------------
+# The claim has to be qualified everywhere it is made, not only in one file
+# ---------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[2]
+README = ROOT / "README.md"
+TAXONOMY_MODULE = ROOT / "src" / "evidence_engine" / "domain" / "shared" / "taxonomy.py"
+PINS = ROOT / "docs" / "governance" / "BASELINE_PINS.md"
+
+
+def test_the_readme_names_which_half_phase_0_5_closes() -> None:
+    """The protocol was corrected and the README was not, which is how a
+    contradiction survives a review: the reader checks the document that was
+    just changed."""
+    text = README.read_text(encoding="utf-8")
+
+    assert "Phase 0.5 closes the speech half only" in text
+    assert "has to say which one" in text
+
+
+def test_the_taxonomy_module_does_not_claim_a_single_closure() -> None:
+    """It defines both enums, so a docstring about "closing the taxonomy" is
+    a claim about the visual classes too."""
+    text = TAXONOMY_MODULE.read_text(encoding="utf-8")
+
+    assert "published and unvalidated" in text
+    assert "before Phase 0\ncan close" not in text
+
+
+def test_the_pins_do_not_make_the_published_average_the_target() -> None:
+    """87.8 is a ten-language average with eight synthetic languages in it,
+    and includes English and German, which this thesis does not measure.
+
+    A target taken from it would be a target against a number produced from
+    data that is neither Spanish nor human nor spontaneous. The comparator is
+    the es-PE held-out measurement, which does not exist yet.
+    """
+    text = PINS.read_text(encoding="utf-8")
+
+    assert "87.8 is not the NFR-001 threshold" in text
+    assert "the NFR-001 comparator" in text
+    # The claim in the form it took before.
+    assert "NFR-001 has to be read\nagainst 87.8" not in text
+
+
+def test_the_pins_separate_the_frozen_artifact_from_the_frozen_run() -> None:
+    """A pinned digest guarantees the same weights, not the same numbers."""
+    text = PINS.read_text(encoding="utf-8")
+
+    assert "model artifacts frozen" in text
+    assert "executable baseline" in text
+    assert "Three things get frozen" in text
+
+
+GITATTRIBUTES = ROOT / ".gitattributes"
+
+
+def test_gitattributes_keeps_the_rules_it_had_before_the_evidence_exception() -> None:
+    """A guard against the way this file was broken once already.
+
+    Adding the `docs/evidence/** -whitespace` exception replaced the file
+    instead of appending to it, silently dropping LF normalization, the
+    byte-for-byte guarantee on the golden fixtures and the binary declarations.
+    None of it would have failed a test: it would have surfaced as a contract
+    test that passes on one platform and fails on another, months later, in
+    something unrelated.
+
+    Checked here rather than trusted to review, because the loss is invisible
+    in a diff that shows a file being rewritten.
+    """
+    text = GITATTRIBUTES.read_text(encoding="utf-8")
+
+    required = [
+        "* text=auto eol=lf",  # repository-wide normalization
+        "tests/contract/golden/** -text",  # byte-for-byte fixtures
+        "*.wav binary",
+        "*.mp4 binary",
+        "*.webm binary",
+        "docs/evidence/** -whitespace",  # the exception that caused the loss
+    ]
+    missing = [rule for rule in required if rule not in text]
+    assert not missing, f"rules dropped from .gitattributes: {missing}"

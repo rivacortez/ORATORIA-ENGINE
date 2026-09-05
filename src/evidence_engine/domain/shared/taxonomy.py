@@ -16,9 +16,17 @@ out for scientific reasons before ethical ones: the engine has no instrument
 that measures nervousness, so any such label would be an invention.
 
 *Definitions before detectors.* The Spanish definitions here are the ones two
-annotators must be able to apply consistently to a pilot sample before Phase 0
-can close. They are written for a human with a waveform and a video, not for a
-model, and the detector's job is to approximate them - never the reverse.
+annotators must be able to apply consistently to a pilot sample before the
+phase that publishes them can close. They are written for a human with a
+waveform and a video, not for a model, and the detector's job is to approximate
+them - never the reverse.
+
+That closure is *per modality*, and this file holds both. `SpeechEventType` is
+what Pilot B measures; `VisualEventType` is not looked at until Phase 5, and
+`docs/corpus/PILOT_PROTOCOL.md` says so and lists what closing it would take.
+So "the taxonomy has been validated" is never a true sentence on its own - it
+has to name which half, and until Phase 5 the visual definitions below are
+published and unvalidated.
 
 Changing this file changes ``TAXONOMY_VERSION``. Published versions are
 immutable (US-008): historical results keep resolving against the version they

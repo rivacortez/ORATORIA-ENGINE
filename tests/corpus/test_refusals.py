@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from corpus.agreement import report
 from corpus.agreement.report import (
     IncompatibleVersions,
     InvalidReportParameters,
@@ -24,7 +25,13 @@ from corpus.agreement.report import (
 )
 from corpus.cli.main import main
 from corpus.io.elan import ElanError, WouldOverwrite, read, write_template
-from corpus.schema.records import SCHEMA_VERSION, AnnotatedRecording, AnnotationPass
+from corpus.schema.records import (
+    SCHEMA_VERSION,
+    AnnotatedRecording,
+    AnnotationPass,
+    SchemaViolation,
+    Speaker,
+)
 from evidence_engine.domain.shared.provenance import SemanticVersion
 from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION, SpeechEventType
 from tests.corpus.conftest import annotation, recording, word
@@ -444,3 +451,86 @@ def test_writing_a_new_file_is_unaffected(tmp_path: Path) -> None:
 
     assert main(_template_args(path)) == 0
     assert path.exists()
+
+
+# ---------------------------------------------------------------------------
+# The domain model, not only the file reader
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["v1", "1.0", "", "1.0.0", 100])
+def test_a_version_that_is_not_a_semantic_version_is_refused(bad: object) -> None:
+    """The hole behind the hole.
+
+    The ELAN reader parses both versions and refuses what it cannot read, so a
+    record built from a file was safe. A record built in code was not: Python
+    does not enforce the annotation, `taxonomy_version="v1"` was accepted, and
+    two records carrying the *same* unparseable string compare equal - so the
+    agreement guard passed them and reported a comparison between two manuals
+    nobody can identify.
+
+    Note `"1.0.0"` in the list. The string that looks exactly right is the one
+    that would have survived review.
+    """
+    with pytest.raises(SchemaViolation, match="SemanticVersion"):
+        AnnotatedRecording(
+            recording_id="pilot-001",
+            speaker=Speaker(pseudonym="P-001"),
+            annotator_id="ana",
+            annotation_pass=AnnotationPass.FIRST,
+            duration_ms=10_000,
+            taxonomy_version=bad,  # type: ignore[arg-type]
+        )
+
+
+def test_an_invalid_schema_version_is_refused_too() -> None:
+    with pytest.raises(SchemaViolation, match="schema_version"):
+        AnnotatedRecording(
+            recording_id="pilot-001",
+            speaker=Speaker(pseudonym="P-001"),
+            annotator_id="ana",
+            annotation_pass=AnnotationPass.FIRST,
+            duration_ms=10_000,
+            schema_version="1.0.0",  # type: ignore[arg-type]
+        )
+
+
+def test_two_records_with_the_same_invalid_version_can_no_longer_be_compared() -> None:
+    """The end-to-end shape of the defect, stated as the harm.
+
+    Equality is not enough: two identical unreadable strings are equal, and
+    equality was the whole guard.
+    """
+    with pytest.raises(SchemaViolation):
+        recording(
+            "ana",
+            [annotation(FILLED, 1_000, 2_000, "ana")],
+            taxonomy_version="v1",  # type: ignore[arg-type]
+        )
+
+
+def test_a_missing_taxonomy_version_is_still_constructible() -> None:
+    """Permitted at construction, refused at comparison.
+
+    A record can legitimately not know its manual - one written before the
+    property existed - and the refusal belongs where the number would be
+    produced, not where the record is built.
+    """
+    built = recording("ana", [annotation(FILLED, 1_000, 2_000, "ana")], taxonomy_version=None)
+
+    assert built.taxonomy_version is None
+
+
+def test_the_taxonomy_guard_describes_what_it_actually_does() -> None:
+    """A docstring test, which normally is not worth writing.
+
+    Worth it here because this exact docstring has now been a review finding
+    twice: the body was rewritten when the rule tightened and the summary line
+    was left saying "a minor one becomes a note", so the file documented the
+    behaviour it had just stopped having. A reader trusting it would conclude
+    the tool tolerates something it refuses.
+    """
+    doc = report._require_comparable_taxonomies.__doc__ or ""
+
+    assert "becomes a note" not in doc
+    assert "Exactly equal" in doc

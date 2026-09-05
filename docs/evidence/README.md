@@ -14,9 +14,13 @@ annotators is spent on the taxonomy rather than on the tooling. Each capture
 says so in its own header and lists what is still outstanding.
 
 These exist because "the integration tests pass" is a claim, and a claim about
-a run nobody can point at is worth about as much as no claim. Each file carries
-the commit it ran at, whether the tree was clean, the container images, and the
-unedited output of every gate.
+a run nobody can point at is worth about as much as no claim.
+
+Every file carries the commit it ran at, whether the tree was clean, the Python
+version, and the unedited output of each step. **The container images are in
+the `battery-` captures only** — the Pilot A rehearsal drives a command line
+over files on disk and starts no infrastructure, so there is nothing for it to
+record there and it does not pretend otherwise.
 
 They are committed on purpose. A test report that lives in a terminal
 scrollback cannot be cited in a thesis, and the integration results are the

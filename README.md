@@ -36,18 +36,18 @@ Stated up front because most of the design exists to keep these out:
 | Phase (§13) | Deliverable                                              | State                                                          |
 | ----------- | -------------------------------------------------------- | -------------------------------------------------------------- |
 | 0           | Scope, taxonomy, annotation manual, consent policy, ADRs | **deliverables done; exit criterion not met** — see below                                                       |
-| 0.5         | Experimental closure of the taxonomy                     | **tooling done; pilots not run**                                       |
+| 0.5         | Experimental closure of the **speech** taxonomy          | **tooling done; pilots not run** — visual half deferred to Phase 5      |
 | 2           | Platform skeleton and contracts                          | **done, exit criterion proven**                                |
 | 3           | Verbatim speech baseline                                 | not started                                                    |
 | 4           | Disfluency and prosody intelligence                      | not started                                                    |
-| 5           | Visual evidence                                          | not started                                                    |
+| 5           | Visual evidence — **and closing the visual taxonomy**    | not started                                                    |
 | 6           | Multimodal fusion                                        | deterministic correlation done; needs a corpus to evaluate     |
 | 7           | Real-time hardening                                      | bounded queues and backpressure done; load testing not started |
 | 8           | OratorIA integration                                     | not started                                                    |
 | 9           | Scientific validation                                    | not started                                                    |
 | 10          | Production readiness                                     | not started                                                    |
 
-### Phase 0 is not closed, and the distinction matters
+### Phase 0 is not closed, and it has two halves
 
 §13 separates Phase 0's *deliverables* from its *exit criterion*:
 
@@ -60,6 +60,16 @@ any recruitment starts. Recording forty speakers and then discovering that
 annotators split `false_start` from `self_repair` differently would mean a
 corpus whose per-class F1 measures annotator noise, and re-annotation costs the
 same as the original.
+
+**Phase 0.5 closes the speech half only.** The pilots never show an annotator a
+video frame, so the nine visual classes stay published and unvalidated. Closing
+them needs its own pilot, and first a decision about whether they are events at
+all — `insufficient_lighting` is a continuous condition, and the one-to-one
+matching used for agreement here is the wrong instrument for it. That work sits
+in Phase 5, where the corpus already exists and a taxonomy error costs
+re-annotating one modality rather than re-recording everything.
+`docs/corpus/PILOT_PROTOCOL.md` tracks the two halves separately, and any claim
+that "the taxonomy is validated" has to say which one.
 
 `docs/corpus/PILOT_PROTOCOL.md` has the two pilots (technical, then taxonomic),
 what gets measured and why in that order. The tooling for it is built and

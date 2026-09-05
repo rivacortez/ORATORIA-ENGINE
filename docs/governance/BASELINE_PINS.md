@@ -1,11 +1,15 @@
 # Frozen baseline pins
 
-**Status:** models and configuration frozen, 2026-09-04.
+**Status:** **model artifacts frozen**, 2026-09-04 — identifier, revision,
+weights digest, decoding mode and inference library. The **executable baseline
+is not frozen**: the backend is still a choice between ct2 and transformers,
+and the container, Torch/CUDA build and backend dependencies are unpinned
+because none of them exist yet. Completed in Phase 3.
 **Revised 2026-09-04:** the verbatim baseline was re-pinned from CrisperWhisper
 v1 to 2.0. v1 is English/German-only by its own card, so it could not be the
 comparator for an `es-PE` corpus. See "Why this replaces the v1 pin".
-**Outputs:** not frozen. See "Two things get frozen" below — the held-out set
-does not exist yet.
+**Outputs:** not frozen. See "Three things get frozen" below — the held-out
+set does not exist yet.
 **Phase 0 deliverable (§13).**
 
 ---
@@ -17,13 +21,22 @@ Whisper and CrisperWhisper as "pinned checkpoint" without an identifier, a
 revision or a digest. That is a protocol, not a baseline. This file is the
 pins.
 
-**Two things get frozen, at two different times, and conflating them is a
-methodological error:**
+**Three things get frozen, at three different times, and conflating any two of
+them is a methodological error:**
 
-| Frozen                                  | When                 | Why then                                                                                                                                                                  |
-| --------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The **models and their configuration**  | **done, 2026-09-04** | So the comparison is fixed before anyone has seen a result it could be tuned against.                                                                                     |
-| Their **outputs over the held-out set** | end of Phase 1       | The held-out set does not exist yet. §14.4 freezes it at the end of corpus construction, and an output generated before then is an output over data that is still moving. |
+| Frozen | When | Why then |
+| --- | --- | --- |
+| The **model artifacts and decoding configuration** — identifier, revision, weights digest, mode, language, timestamp granularity | **done, 2026-09-04** | So the comparison is fixed before anyone has seen a result it could be tuned against. |
+| The **executable baseline** — backend, container digest, Torch/CUDA build, backend dependencies | Phase 3 | None of it exists. There is no inference container and torch is not a dependency of this repository; a version string written now would be invented. |
+| Their **outputs over the held-out set** | end of Phase 1 | The held-out set does not exist yet. §14.4 freezes it at the end of corpus construction, and an output generated before then is an output over data that is still moving. |
+
+The distinction between the first two rows is not pedantry. A pinned digest
+guarantees the same weights; it does not guarantee the same numbers. bf16 on
+ct2 and bf16 through transformers do not produce bit-identical output, and
+neither does the same backend on a different CUDA build. So a figure produced
+before Phase 3 pins the second row is a figure whose reproduction requires
+knowing what the person ran — which is exactly the state this file exists to
+end. Until then, every baseline figure records its backend alongside it.
 
 `BASELINES.md` §1 currently reads as though outputs can be generated now. They
 cannot, and the corrected sequencing is recorded here.
@@ -165,8 +178,25 @@ languages.
 model card, read at revision `f4334f6e`.</sub>
 
 **This raises the bar the project's own model has to clear**, which is the
-honest consequence of pinning the right baseline. NFR-001 has to be read
-against 87.8, not against the 64.8 the wrong pin would have implied.
+honest consequence of pinning the right baseline. The wrong pin would have set
+expectations against a model scoring 64.8 on its own two languages.
+
+**87.8 is not the NFR-001 threshold, and must not be quoted as one.** It is a
+ten-language average in which eight of the ten languages — Spanish among them —
+are evaluated on synthetic verbatim sets, and the average includes English and
+German, which this thesis does not measure. A target taken from it would be a
+target against a number produced from data that is neither Spanish nor human
+nor spontaneous.
+
+| Figure                              | What it is                                             | Role here                                |
+| ----------------------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| 87.8 disfluency F1                  | published 10-language average, 8 languages synthetic   | context, and the reason to pin 2.0 at all |
+| **this baseline on the es-PE held-out set** | **not yet measured** — Phase 1 produces the held-out set | **the NFR-001 comparator**        |
+
+The comparator is the second row. It does not exist yet, it is produced by
+running this exact pin over the human-annotated Peruvian held-out slice, and
+until it does exist NFR-001 has no number to be read against. That is the
+correct state for a target whose corpus has not been recorded.
 
 ### The caveat that does not go away
 

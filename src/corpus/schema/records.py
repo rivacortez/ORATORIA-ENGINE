@@ -257,6 +257,7 @@ class AnnotatedRecording:
             raise SchemaViolation("a recording needs an id")
         if self.duration_ms <= 0:
             raise SchemaViolation(f"a recording has positive duration, got {self.duration_ms}")
+        self._require_parsed_versions()
         for annotation in self.disfluencies:
             if annotation.annotator_id != self.annotator_id:
                 raise SchemaViolation(
@@ -267,6 +268,37 @@ class AnnotatedRecording:
                 raise SchemaViolation(
                     f"annotation ends at {annotation.interval.end_ms} ms, past the "
                     f"recording's {self.duration_ms} ms"
+                )
+
+    def _require_parsed_versions(self) -> None:
+        """A version is a ``SemanticVersion``, not a string that looks like one.
+
+        The ELAN reader parses both versions and refuses what it cannot read,
+        so a record built from a file is safe. A record built in code is not:
+        Python does not enforce the annotation, and ``taxonomy_version="v1"``
+        used to be accepted here and then sail through the agreement guard,
+        because two records carrying the *same* unparseable string compare
+        equal. The comparison would have been between two manuals nobody can
+        identify, and it would have looked like agreement.
+
+        Enforced in the constructor rather than at the comparison, so the
+        failure surfaces where the bad value was introduced. Every path into
+        the corpus - the reader, a notebook, a future importer - goes through
+        here.
+        """
+        for field_name in ("schema_version", "taxonomy_version"):
+            value = getattr(self, field_name)
+            if value is None and field_name == "taxonomy_version":
+                # Permitted at construction, refused at comparison. A record
+                # can legitimately not know its manual - one written before the
+                # property existed - and the refusal belongs where the number
+                # would be produced.
+                continue
+            if not isinstance(value, SemanticVersion):
+                raise SchemaViolation(
+                    f"{field_name} must be a SemanticVersion, got {value!r}. A version "
+                    "that is not parsed is a version that cannot be compared, and two "
+                    "records carrying the same unreadable string compare equal."
                 )
 
     def of_type(self, event_type: SpeechEventType) -> tuple[DisfluencyAnnotation, ...]:
