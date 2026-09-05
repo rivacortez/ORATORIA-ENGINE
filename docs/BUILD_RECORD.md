@@ -300,6 +300,24 @@ turn red. Every code fix in rounds two, three and four was checked that way.
 
 ---
 
+### 4.7 Keyed 38 speakers by a number that only 20 of them had
+
+Scaling the baseline run from the female half of SLR73 to both halves, the
+speaker key was `path.stem.split("_")[1]` — the numeric part of the filename.
+Eighteen numeric ids appear in **both** the `pef` and `pem` sets, so
+`pef_00610` and `pem_00610` — two different people — collapsed into one
+speaker. The corpus reported 20 speakers where it has 38.
+
+**Cost.** Caught by a count that looked wrong: 5 447 clips across "20"
+speakers. Nothing else would have noticed. Every per-speaker figure would have
+been a blend of two people, and the run would have completed and printed
+numbers.
+
+**Rule.** A speaker identifier is whatever makes two speakers distinguishable,
+not whatever is convenient to slice out of a filename. This is the same failure
+`corpus split` exists to prevent — a model scored on someone it has heard
+before — arrived at from the analysis side, where no import contract guards it.
+
 ## 5. What is blocked, and by what
 
 Four things gate almost everything downstream. None of them is an engineering

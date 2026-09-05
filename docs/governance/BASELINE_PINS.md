@@ -203,37 +203,94 @@ running this exact pin over the human-annotated Peruvian held-out slice, and
 until it does exist NFR-001 has no number to be read against. That is the
 correct state for a target whose corpus has not been recorded.
 
-### Run once, on this machine, 2026-09-05
+### Run on this machine, 2026-09-05
 
 The pins above were taken from metadata. This is what happened when the
-artifact was actually downloaded and run, on the annotation workstation, over
-real Peruvian audio (OpenSLR SLR73). It is a smoke test and **not a figure**:
-`REFERENCE_ENVIRONMENT.md` says a development laptop never sources a reported
-number, and nothing below enters a results table.
+artifact was downloaded and run over real Peruvian audio — OpenSLR SLR73, all
+38 speakers, 20 clips each, 77.6 minutes.
+
+**Nothing here is a figure.** `REFERENCE_ENVIRONMENT.md` says a development
+laptop never sources a reported number, and this is the annotation workstation.
+What the run establishes is that the pins are runnable and that the decoding
+configuration is applicable — not how well the baseline performs.
 
 | Checked | Result |
 | --- | --- |
 | Weights digest against the pin | **matches** — 3 087 130 976 bytes, sha256 `a8e94b85…`, byte for byte |
-| Loads at fp16 on 8 GB | yes — 4.19 GiB resident, 7.9 s to load |
+| Loads at fp16 on 8 GB | yes — 4.19 GiB resident, 7.9 s |
 | CUDA build for this card | `torch 2.14.0+cu130` lists `sm_120`; the RTX 5060 is compute capability (12, 0) |
-| Pinned decoding applies | yes — forced `es`, beam 5, the temperature ladder, `condition_on_prev_tokens=False` all accepted |
-| **Word-level timestamps** | **yes** — 19 word offsets on a 7.3 s clip, e.g. `Hay` 0.00–0.92, `Gaceta` 2.30–2.78 |
-| Throughput | 0.46× real time, beam 5, fp16, batch 1 — indicative only, see above |
+| Pinned decoding applies | yes — forced `es`, beam 5, the temperature ladder, `condition_on_prev_tokens=False` |
+| **Word-level timestamps** | **yes** — e.g. `Hay` 0.00–0.92, `Gaceta` 2.30–2.78 |
+| Throughput | 0.267× real time, beam 5, fp16, batch 4 — indicative only |
 
 **The word-timestamp row is the one that mattered.** NFR-004's 250 ms boundary
 target is unreachable from segment-level timestamps without a separate
-forced-alignment component, and this document asserted that none is needed
-because the checkpoint ships alignment heads. That was an argument from the
-model card. It is now an observation.
+forced-alignment component, and this document asserted none was needed because
+the checkpoint ships alignment heads. That was an argument from a model card.
+It is now an observation.
 
 **How to read them, which is not obvious.** `model.generate(...,
 return_timestamps="word", return_dict_in_generate=True)` returns a dict whose
-`segments` carry `start`, `end`, `tokens`, `idxs` and `result` — segment
-boundaries, **no per-word offsets**. The word offsets come from the
+`segments` carry `start`, `end`, `tokens` and `idxs` — segment boundaries, and
+**no per-word offsets**, with no error. The word offsets come from the
 `automatic-speech-recognition` pipeline with `return_timestamps="word"`, as
 `chunks`. Recorded because the first attempt took the obvious route and got
-zero offsets back without an error, which is exactly how a project ends up
-believing it has word timestamps and shipping segment ones.
+zero offsets back silently, which is exactly how a project ends up believing it
+has word timestamps and shipping segment ones.
+
+#### A word-error rate, and why the headline number is not the answer
+
+Over 7 223 reference words:
+
+| | |
+| --- | --- |
+| WER as computed | **0.0299** (216 errors) |
+| **WER counting recognition errors only** | **0.0089** |
+
+Classifying every error by aligning the two token streams and looking at each
+substitution:
+
+| Kind | Count | Share | Contributes |
+| --- | ---: | ---: | ---: |
+| Accent only | 82 | 38.0% | 0.0114 |
+| Number formatting | 70 | 32.4% | 0.0097 |
+| **Recognition** | **64** | **29.6%** | **0.0089** |
+
+**Seven of every ten "errors" are not the model's.** The accent bucket runs
+almost entirely in the direction of the model writing correct Spanish where the
+reference does not — `este` → `esté`, `llegue` → `llegué`, `que` → `qué`,
+`sandwiches` → `sándwiches`. SLR73's transcripts carry orthographic errors, and
+an accent-sensitive WER counts the model's corrections as mistakes.
+
+The normalisation keeps accents deliberately: in Spanish they are phonemic and
+lexical — `esta`/`está`, `el`/`él` — and folding them would hide real errors.
+That decision is right and it is also why the classification is not optional.
+The number bucket is separate for the reason SLR73's own documentation gives:
+its transcripts "have not been text normalized and may contain non-standard
+word (NSW) tokens... such as abbreviations and cardinal numbers".
+
+The genuine recognition errors are the kind one would expect: `resguardar` →
+`reguardar`, `jeroglífico` → `jerolífico`, `cambiarles` → `cambiarle`.
+
+**The rule this leaves.** Any WER this project reports arrives with its error
+classification beside it. A bare 3% here would have been half the reference's
+orthography, and no reader could have told.
+
+#### The negative control fired correctly
+
+Zero filler tokens written that the reference lacks, across 760 clips and 77
+minutes. That is the expected answer for read speech whose collection protocol
+re-recorded takes containing stuttering, and it is the cheapest available check
+that a disfluency detector is not hallucinating: run it over SLR73, and if it
+fires often, the detector is miscalibrated.
+
+#### Per-speaker spread, which is the partitioning argument with data
+
+Recognition-only WER ranges from **0.0000 to 0.0462** across the 38 speakers.
+Nine speakers have no recognition error at all in roughly 200 words each. A
+held-out set that happened to land on those nine would report zero and
+generalise to nobody — which is why `corpus split` stratifies rather than
+sampling.
 
 ### Two corrections a review round later
 
