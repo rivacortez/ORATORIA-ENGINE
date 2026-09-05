@@ -16,6 +16,7 @@ unitizing a condition. See `docs/corpus/PILOT_PROTOCOL.md`.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -176,9 +177,9 @@ def test_the_pins_separate_the_frozen_artifact_from_the_frozen_run() -> None:
     """A pinned digest guarantees the same weights, not the same numbers."""
     text = PINS.read_text(encoding="utf-8")
 
-    assert "model artifacts frozen" in text
-    assert "executable baseline" in text
-    assert "Three things get frozen" in text
+    assert "weights and runtime-independent decoding configuration frozen" in text
+    assert "Everything that decides *how the model is run* is still open" in text
+    assert "Four things get frozen" in text
 
 
 GITATTRIBUTES = ROOT / ".gitattributes"
@@ -209,3 +210,134 @@ def test_gitattributes_keeps_the_rules_it_had_before_the_evidence_exception() ->
     ]
     missing = [rule for rule in required if rule not in text]
     assert not missing, f"rules dropped from .gitattributes: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Absence, not only presence
+# ---------------------------------------------------------------------------
+#
+# The tests above assert that the correct phrasing exists. A reviewer pointed
+# out that this is half a check: a document can carry the qualified statement
+# in one section and the unqualified one in another, and a positive assertion
+# passes while the reader is still misled. Three survived that way -
+# PILOT_PROTOCOL.md's own title among them.
+#
+# So the same documents are swept for the phrasings that must not appear
+# anywhere in them.
+
+#: Files that make claims about what has been validated. Every claim in every
+#: one of them has to name a modality.
+CLAIM_BEARING = (
+    README,
+    PROTOCOL,
+    TAXONOMY_MODULE,
+    ROOT / "docs" / "governance" / "BASELINES.md",
+    PINS,
+)
+
+#: Phrasings that assert a closure without naming which half of the taxonomy.
+#: Written as substrings rather than a regex over "taxonomy": the word appears
+#: constantly and legitimately, and it is the *closure* claim that has to be
+#: qualified.
+UNQUALIFIED_CLOSURES = (
+    "closure of the taxonomy",
+    "the taxonomy gets closed",
+    "closing the taxonomy",
+    "close phase 0",
+    "closes phase 0",
+    "the taxonomy is validated",
+    "the taxonomy has been validated",
+)
+
+#: Spans where a forbidden phrase is being *mentioned* rather than asserted:
+#: double quotes and backticks. The documents that forbid these phrasings quote
+#: them in order to forbid them, and a sweep that cannot tell a claim from its
+#: prohibition flags the fix as the defect.
+_MENTION = re.compile(r'"[^"\n]*"|`[^`\n]*`')
+
+
+def _assertions_only(text: str) -> str:
+    """The document with its quoted mentions removed."""
+    return _MENTION.sub(" ", text)
+
+
+@pytest.mark.parametrize("path", CLAIM_BEARING, ids=lambda p: p.name)
+def test_no_document_claims_an_unqualified_closure(path: Path) -> None:
+    """Phase 0 has two halves and only one of them is being closed.
+
+    Scanned over assertions rather than raw text. Both README.md and
+    taxonomy.py legitimately contain `"the taxonomy is validated"` inside the
+    sentence that says it is never a true sentence on its own, and a check that
+    cannot tell a claim from a quotation of it would demand deleting the
+    warning.
+    """
+    text = _assertions_only(path.read_text(encoding="utf-8").lower())
+
+    found = [phrase for phrase in UNQUALIFIED_CLOSURES if phrase in text]
+    assert not found, f"{path.name} claims a closure without naming the half: {found}"
+
+
+#: Phrasings that overstate what is pinned. The weights are frozen; the thing
+#: that runs them is not, and will not be until Phase 3.
+#:
+#: Deliberately narrow. "Why baselines are frozen before anything is trained" is
+#: a heading about the principle, and "Phase 3, after the environment is frozen"
+#: is a correct statement about a future stage - neither is an overstatement,
+#: and a list broad enough to catch them would be a list nobody can satisfy.
+OVERSTATED_FREEZES = (
+    "the baseline is frozen",
+    "the baselines are frozen",
+    "inference library is frozen",
+    "the executable baseline is frozen",
+    "the executable environment is frozen",
+)
+
+
+@pytest.mark.parametrize("path", (PINS, ROOT / "docs" / "governance" / "BASELINES.md"))
+def test_the_governance_documents_do_not_overstate_the_freeze(path: Path) -> None:
+    """A pinned weights digest guarantees the same weights, not the same
+    numbers: ct2 and transformers do not produce bit-identical output, and
+    neither does one backend across two CUDA builds."""
+    text = _assertions_only(path.read_text(encoding="utf-8").lower())
+
+    found = [phrase for phrase in OVERSTATED_FREEZES if phrase in text]
+    assert not found, f"{path.name} overstates what is pinned: {found}"
+
+
+def test_both_governance_documents_carry_the_same_freeze_cycle() -> None:
+    """The blocking finding: the two files disagreed about the cycle.
+
+    `BASELINES.md` had two stages with the outputs at the end of Phase 1;
+    `BASELINE_PINS.md` had three and put the executable environment at Phase 3.
+    Under the first, the outputs would be generated by an unpinned runtime -
+    which is a number nobody can regenerate, and the opposite of what a frozen
+    baseline is for.
+
+    Checked as an ordered sequence rather than a set: the order *is* the
+    content, because it encodes which stage depends on which.
+    """
+    stages = (
+        "Model artifacts and runtime-independent decoding configuration",
+        "The held-out set",
+        "The executable environment",
+        "The baseline outputs over the held-out set",
+    )
+
+    for path in (PINS, ROOT / "docs" / "governance" / "BASELINES.md"):
+        text = path.read_text(encoding="utf-8")
+        positions = [text.find(stage) for stage in stages]
+        assert all(p >= 0 for p in positions), (
+            f"{path.name} is missing freeze stages: "
+            f"{[s for s, p in zip(stages, positions, strict=True) if p < 0]}"
+        )
+        assert positions == sorted(positions), (
+            f"{path.name} lists the freeze stages out of order; the order encodes "
+            "which stage depends on which"
+        )
+
+
+def test_the_outputs_are_scheduled_after_the_environment() -> None:
+    """Stated in prose too, because the table alone is easy to skim past."""
+    for path in (PINS, ROOT / "docs" / "governance" / "BASELINES.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "after** the environment is frozen" in text, path.name

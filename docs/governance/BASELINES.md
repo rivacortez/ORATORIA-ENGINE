@@ -11,19 +11,31 @@ corpus. That comparison is only meaningful if the baseline is chosen and pinned
 _before_ anyone has seen the test results. A baseline selected afterwards is
 selected — consciously or not — to be beatable.
 
-So two things are frozen, **at two different times**, and conflating them is
-a methodological error:
+So **four** things are frozen, at four different times, and conflating any two
+of them is a methodological error:
 
 | Frozen | When | Why then |
-|---|---|---|
-| The models and their configuration | Phase 0.5 | Before anyone has seen a result the choice could be tuned against. |
-| Their outputs over the held-out set | end of Phase 1 | The held-out set does not exist until then. Generating an output over data that is still moving produces a reference to nothing. |
+| --- | --- | --- |
+| **Model artifacts and runtime-independent decoding configuration** — identifier, revision, weights digest, mode, language, timestamp granularity | **done, Phase 0.5** | Before anyone has seen a result the choice could be tuned against. |
+| **The held-out set** | end of Phase 1 | It does not exist until then (§14.4). An output over data that is still moving is a reference to nothing. |
+| **The executable environment** — backend, container digest, Torch/CUDA build, backend dependencies | Phase 3 | None of it exists yet. There is no inference container and torch is not a dependency of this repository; a version string written now would be invented. |
+| **The baseline outputs over the held-out set** | Phase 3, **after** the environment is frozen | An output produced by an unpinned runtime cannot be regenerated. Freezing it earlier freezes a number nobody can reproduce, which is the opposite of what a frozen baseline is for. |
 
-An earlier version of this file read as though outputs could be generated now.
-They cannot. The pins live in `BASELINE_PINS.md`; the outputs are generated
-once the held-out set is frozen, stored as a versioned artifact alongside the
-digest of the input set, and the baseline is never re-run against a newer
-checkpoint of itself for the remainder of the project.
+**The order of the last two rows is the part that is easy to get wrong.** It is
+tempting to generate the baseline outputs as soon as the held-out set exists,
+at the end of Phase 1. That would produce them on whatever backend and CUDA
+build happened to be installed, and a pinned weights digest does not rescue
+that: ct2 and transformers do not produce bit-identical output from the same
+weights, and neither does one backend across two CUDA builds. The outputs wait
+for the environment.
+
+An earlier version of this file read as though outputs could be generated now,
+and then as though they were due at the end of Phase 1. Neither is right: they
+are due in Phase 3, once the environment that produces them is pinned. The pins
+themselves live in `BASELINE_PINS.md`, which carries this same table; the
+outputs are stored as a versioned artifact alongside the digest of the input
+set, and the baseline is never re-run against a newer checkpoint of itself for
+the remainder of the project.
 
 ## 2. The two baselines
 

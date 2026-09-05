@@ -1,15 +1,15 @@
 # Frozen baseline pins
 
-**Status:** **model artifacts frozen**, 2026-09-04 — identifier, revision,
-weights digest, decoding mode and inference library. The **executable baseline
-is not frozen**: the backend is still a choice between ct2 and transformers,
-and the container, Torch/CUDA build and backend dependencies are unpinned
-because none of them exist yet. Completed in Phase 3.
+**Status:** **weights and runtime-independent decoding configuration frozen**,
+2026-09-04 — identifier, revision, weights digest, mode, language and timestamp
+granularity. Everything that decides *how the model is run* is still open: the
+CrisperWhisper backend is a choice between ct2 and transformers, Whisper's
+`transformers` version is unpinned, and there is no container, Torch or CUDA
+build to pin. That is the Phase 3 row of the cycle below.
 **Revised 2026-09-04:** the verbatim baseline was re-pinned from CrisperWhisper
 v1 to 2.0. v1 is English/German-only by its own card, so it could not be the
 comparator for an `es-PE` corpus. See "Why this replaces the v1 pin".
-**Outputs:** not frozen. See "Three things get frozen" below — the held-out
-set does not exist yet.
+**Outputs:** not frozen, and not due until Phase 3. See the cycle below.
 **Phase 0 deliverable (§13).**
 
 ---
@@ -21,25 +21,30 @@ Whisper and CrisperWhisper as "pinned checkpoint" without an identifier, a
 revision or a digest. That is a protocol, not a baseline. This file is the
 pins.
 
-**Three things get frozen, at three different times, and conflating any two of
-them is a methodological error:**
+**Four things get frozen, at four different times, and conflating any two of
+them is a methodological error.** This table is the authority; `BASELINES.md`
+carries the same four rows, and they are checked against each other by
+`tests/corpus/test_scope.py`.
 
 | Frozen | When | Why then |
 | --- | --- | --- |
-| The **model artifacts and decoding configuration** — identifier, revision, weights digest, mode, language, timestamp granularity | **done, 2026-09-04** | So the comparison is fixed before anyone has seen a result it could be tuned against. |
-| The **executable baseline** — backend, container digest, Torch/CUDA build, backend dependencies | Phase 3 | None of it exists. There is no inference container and torch is not a dependency of this repository; a version string written now would be invented. |
-| Their **outputs over the held-out set** | end of Phase 1 | The held-out set does not exist yet. §14.4 freezes it at the end of corpus construction, and an output generated before then is an output over data that is still moving. |
+| **Model artifacts and runtime-independent decoding configuration** — identifier, revision, weights digest, mode, language, timestamp granularity | **done, Phase 0.5** | Before anyone has seen a result the choice could be tuned against. |
+| **The held-out set** | end of Phase 1 | It does not exist until then (§14.4). An output over data that is still moving is a reference to nothing. |
+| **The executable environment** — backend, container digest, Torch/CUDA build, backend dependencies | Phase 3 | None of it exists yet. There is no inference container and torch is not a dependency of this repository; a version string written now would be invented. |
+| **The baseline outputs over the held-out set** | Phase 3, **after** the environment is frozen | An output produced by an unpinned runtime cannot be regenerated. Freezing it earlier freezes a number nobody can reproduce, which is the opposite of what a frozen baseline is for. |
 
-The distinction between the first two rows is not pedantry. A pinned digest
-guarantees the same weights; it does not guarantee the same numbers. bf16 on
-ct2 and bf16 through transformers do not produce bit-identical output, and
-neither does the same backend on a different CUDA build. So a figure produced
-before Phase 3 pins the second row is a figure whose reproduction requires
-knowing what the person ran — which is exactly the state this file exists to
-end. Until then, every baseline figure records its backend alongside it.
+**The order of the last two rows is the part that is easy to get wrong.** It is
+tempting to generate the baseline outputs as soon as the held-out set exists,
+at the end of Phase 1. That would produce them on whatever backend and CUDA
+build happened to be installed, and a pinned weights digest does not rescue
+that: ct2 and transformers do not produce bit-identical output from the same
+weights, and neither does one backend across two CUDA builds. The outputs wait
+for the environment.
 
-`BASELINES.md` §1 currently reads as though outputs can be generated now. They
-cannot, and the corrected sequencing is recorded here.
+An earlier version of `BASELINES.md` read as though outputs could be generated
+now, and a later one scheduled them for the end of Phase 1 - before the
+environment that produces them is pinned. Both are corrected against the table
+above.
 
 ## Why pins are needed at all
 
@@ -83,7 +88,7 @@ discipline works.
 | Parameter count                             | 1 543 490 560                                                                                          |
 | Quantisation                                | fp16 as published (`F16` for all parameters)                                                           |
 | Repository last modified                    | 2024-08-12T10:20:10Z                                                                                   |
-| Inference library and version               | `transformers` — version pinned at Phase 3, recorded here when the runtime lands                       |
+| Inference library and version               | `transformers`, **version not yet pinned** — Phase 3, with the rest of the executable environment       |
 | Decoding: beam size                         | 5                                                                                                      |
 | Decoding: temperature and fallback schedule | `(0.0, 0.2, 0.4, 0.6, 0.8, 1.0)`, the reference fallback ladder                                        |
 | Decoding: language forced or detected       | **forced** to `es`                                                                                     |

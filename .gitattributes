@@ -1,4 +1,9 @@
-# Normalize line endings in the repository; check out native on Windows.
+# LF everywhere: in the repository and in the working tree, Windows included.
+#
+# `eol=lf` is the second half of that and it is deliberate. `text=auto` alone
+# would check out CRLF on Windows, and this repository is developed on Windows
+# and tested on Linux runners - a file that differs between the two is a diff
+# that appears and disappears depending on who looked.
 * text=auto eol=lf
 
 *.py   text eol=lf

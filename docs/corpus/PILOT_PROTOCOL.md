@@ -1,4 +1,4 @@
-# Phase 0.5 — Experimental closure of the taxonomy
+# Phase 0.5 — Experimental closure of the speech taxonomy
 
 **Status:** protocol approved, not yet executed
 **Blocks:** Phase 1 (corpus construction)
@@ -24,8 +24,9 @@ per-class F1 computed on it measures annotator noise instead of model
 performance. The corpus cannot be repaired without re-annotating it, and
 re-annotation costs the same as the original.
 
-So the taxonomy gets closed experimentally first, with a small sample, and the
-manual gets whatever corrections the disagreements demand.
+So the speech taxonomy gets closed experimentally first, with a small sample,
+and the manual gets whatever corrections the disagreements demand. The visual
+half is not touched here; see the scope section immediately below.
 
 ## Scope: the speech taxonomy only
 
@@ -77,7 +78,7 @@ rewritten.
 ## Two pilots, not one
 
 Ten minutes of audio can tell you whether the tooling works. It cannot tell you
-whether the taxonomy is consistent, because ten minutes contains perhaps three
+whether the speech taxonomy is consistent, because ten minutes contains perhaps three
 examples of the rarer classes and agreement on three examples is not evidence
 of anything.
 
@@ -106,7 +107,7 @@ whatever they show is about the tool.
 
 ### Pilot B — taxonomic
 
-**Purpose:** whether the taxonomy is consistently applicable.
+**Purpose:** whether the speech taxonomy is consistently applicable.
 
 |            |                                                                         |
 | ---------- | ----------------------------------------------------------------------- |
@@ -118,8 +119,8 @@ whatever they show is about the tool.
 per speech class", and the rarer classes drive the sample size: `cut_off` and
 `prolongation` appear far less often than `filled_pause`, so a sample chosen by
 minutes will contain plenty of the latter and almost none of the former.
-Select material until each P0 class has enough instances for its per-class
-figure to mean something, and record how many that turned out to be.
+Select material until each P0 speech class has enough instances for its
+per-class figure to mean something, and record how many that turned out to be.
 
 **Several speakers, not one.** A single speaker's disfluency profile is
 idiosyncratic — some people never produce `prolongation` at all — and agreement

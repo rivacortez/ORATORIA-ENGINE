@@ -16,11 +16,20 @@ says so in its own header and lists what is still outstanding.
 These exist because "the integration tests pass" is a claim, and a claim about
 a run nobody can point at is worth about as much as no claim.
 
-Every file carries the commit it ran at, whether the tree was clean, the Python
-version, and the unedited output of each step. **The container images are in
-the `battery-` captures only** — the Pilot A rehearsal drives a command line
-over files on disk and starts no infrastructure, so there is nothing for it to
-record there and it does not pretend otherwise.
+Every file carries the commit it ran at, **how many files were uncommitted
+outside `docs/evidence`**, the Python version, and the unedited output of each
+step.
+
+That scope is exact, not shorthand for "the tree was clean": the capture is
+being written by `tee` while it counts, so counting itself would report every
+clean run as dirty. A capture reporting zero means nothing outside
+`docs/evidence` was uncommitted — it says nothing about other captures sitting
+beside it.
+
+**The container images are in the `battery-` captures only.** The Pilot A
+rehearsal drives a command line over files on disk and starts no
+infrastructure, so there is nothing for it to record there, and it does not
+pretend otherwise.
 
 They are committed on purpose. A test report that lives in a terminal
 scrollback cannot be cited in a thesis, and the integration results are the

@@ -224,7 +224,8 @@ written down in `docs/governance/BRANCH_PROTECTION.md` rather than left implicit
 - `docs/governance/CONSENT_AND_RETENTION.md` — the policy the code enforces,
   with the participant-facing text
 - `docs/governance/BASELINES.md` — frozen baselines and the evaluation protocol
-- `docs/corpus/PILOT_PROTOCOL.md` — the two pilots that close Phase 0
+- `docs/corpus/PILOT_PROTOCOL.md` — the two pilots that close the speech half
+  of Phase 0, and what closing the visual half would take
 - `docs/corpus/DISAGREEMENT_LOG.md` — where annotator disagreements are recorded
 - `docs/adr/` — ADR-001 .. ADR-010
 - `docs/evidence/` — raw battery output from runs against real infrastructure
