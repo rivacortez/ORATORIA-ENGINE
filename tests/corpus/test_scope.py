@@ -233,6 +233,11 @@ CLAIM_BEARING = (
     TAXONOMY_MODULE,
     ROOT / "docs" / "governance" / "BASELINES.md",
     PINS,
+    # The parent build record. Added here the day it was written rather than
+    # the day it first contradicted something: it summarises every other
+    # document, so it is the one most likely to carry a claim that was true
+    # when it was copied and is not any more.
+    ROOT / "docs" / "BUILD_RECORD.md",
 )
 
 #: Phrasings that assert a closure without naming which half of the taxonomy.
