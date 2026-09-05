@@ -712,3 +712,40 @@ def test_verify_reports_a_recording_whose_file_vanished(tmp_path: Path) -> None:
 def test_a_manifest_with_an_unreadable_version_is_refused() -> None:
     with pytest.raises(FreezeError, match="no readable version"):
         from_json(json.dumps({"manifest_version": "one"}))
+
+
+def test_a_corpus_with_a_class_nobody_annotated_cannot_be_frozen(tmp_path: Path) -> None:
+    """Found by running the tooling over real audio, not by inspection.
+
+    OpenSLR SLR73 is Peruvian and read, and its collection protocol re-recorded
+    any take containing stuttering - so an honest annotation of it has an empty
+    disfluency tier. `corpus inventory` said the corpus was inadequate and
+    exited 1. `corpus split --freeze` then froze a held-out set over it and
+    exited 0.
+
+    Both were locally correct: the split's coverage check deliberately ignores a
+    class absent from the whole corpus, on the grounds that it is an inventory
+    problem. Nothing downstream re-asked, so an operator who freezes without
+    inventorying first gets a committed manifest over a corpus that cannot
+    answer anything.
+    """
+    recordings = [_recording(f"P-{i:03d}", f"rec-{i:03d}", [(FILLED, 6)]) for i in range(1, 13)]
+    plan = split(inventory(recordings))
+
+    assert plan.is_usable  # the split itself is fine
+    with pytest.raises(FreezeError, match="no instances anywhere"):
+        freeze(plan, recordings, _sources(tmp_path, recordings))
+
+
+def test_the_freeze_threshold_is_zero_not_the_adequacy_default() -> None:
+    """A corpus short of `DEFAULT_MINIMUM_INSTANCES` still freezes.
+
+    How many instances a class needs to carry a figure is a parameter the pilot
+    argues about with data. A freeze that refused on somebody's default would
+    enforce a number nobody has settled. Zero is different: a per-class figure
+    over no instances is undefined at every threshold.
+    """
+    corpus = inventory(_corpus(13, per_speaker=1))
+
+    assert not corpus.is_adequate()  # far short of 30 instances per class
+    assert split(corpus).is_usable

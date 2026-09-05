@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from corpus.partition.inventory import inventory
 from corpus.partition.split import Partition, PartitionPlan
 from corpus.schema.records import (
     AnnotatedRecording,
@@ -71,6 +72,7 @@ from corpus.schema.records import (
 )
 from corpus.schema.validation import Finding, Severity
 from evidence_engine.domain.shared.provenance import SemanticVersion
+from evidence_engine.domain.shared.taxonomy import p0_speech_events
 
 #: Bumped when the manifest's shape changes. Separate from the annotation
 #: schema version: a manifest can gain a field without any annotation record
@@ -154,6 +156,8 @@ def freeze(
         raise FreezeError(
             f"the split has {len(plan.errors)} error(s) and must not be frozen - {reasons}"
         )
+
+    _require_a_scorable_corpus(recordings)
 
     by_id = {r.recording_id: r for r in recordings}
     entries: list[FrozenRecording] = []
@@ -282,6 +286,42 @@ def _freezable_conditions(recording: AnnotatedRecording) -> RecordingConditions:
             "signal behind its numbers."
         )
     return conditions
+
+
+def _require_a_scorable_corpus(recordings: Sequence[AnnotatedRecording]) -> None:
+    """Refuse a freeze over a corpus no per-class figure can be computed from.
+
+    Found by running the tooling over real audio. OpenSLR SLR73 is Peruvian and
+    read, and its collection protocol re-recorded any take containing
+    stuttering - so an honest annotation of it has an empty disfluency tier.
+    ``corpus inventory`` said so and exited non-zero. ``corpus split --freeze``
+    then froze a held-out set over it and exited zero.
+
+    Both were locally correct and together they were wrong: the split's own
+    coverage check deliberately ignores a class absent from the whole corpus,
+    on the grounds that it is an inventory problem rather than a split problem,
+    and nothing downstream re-asked. An operator who freezes without
+    inventorying first gets a manifest, a digest and a committed artifact over
+    a corpus that cannot answer anything.
+
+    The threshold here is zero, not ``DEFAULT_MINIMUM_INSTANCES``. How many
+    instances a class needs to carry a figure is a parameter the pilot argues
+    about with data, and a freeze that refused on somebody's default would be
+    enforcing a number nobody has settled. Zero is not that: a per-class figure
+    over no instances is undefined at every threshold, and an undefined figure
+    reads as a low score.
+    """
+    counts = inventory(recordings).class_counts
+    empty = sorted(event.value for event in p0_speech_events() if not counts.get(event.value, 0))
+    if not empty:
+        return
+
+    raise FreezeError(
+        f"{len(empty)} P0 class(es) have no instances anywhere in this corpus: "
+        f"{', '.join(empty)}. Their per-class figures would be undefined, and an "
+        "undefined figure is a missing measurement that reads as a low score. Run "
+        "`corpus inventory` to see what is short before freezing."
+    )
 
 
 def verify(manifest: FrozenCorpus, sources: Mapping[str, Path]) -> tuple[Finding, ...]:
