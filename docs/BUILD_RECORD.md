@@ -410,6 +410,32 @@ core light would cost a consumer more than it saved: `ModuleNotFoundError: No
 module named 'fastapi'` from inside a composition root names a package rather
 than a capability.
 
+### 3.18 The SDK facade is public, small, and closed
+
+**Decision.** `evidence_engine` exports thirteen names: the facade, two
+configuration objects, three result contracts, four errors and the version.
+ADR-011 records the reasoning; the surface is asserted by name in
+`tests/contract/test_sdk_surface.py`, and thirteen internals are asserted
+*absent* from the package root.
+
+**Why the absence list is the half that matters.** A consumer handed
+`InMemoryEvidenceRepository` or `WhisperSpeechRuntime` by an `__init__` would be
+coupled to how the engine is assembled this month. The full paths still work
+for anybody who needs them - that is opting out of the promise rather than
+being handed the coupling.
+
+**Why the facade composes use cases rather than calling a runtime.** The short
+version of `analyze_file` would hand the audio to Whisper and return words.
+That is a second functional path, and the state machine, consent, quota,
+ledger, fusion window and calibration gate would each have to be re-implemented
+on it or silently skipped. Two paths that enforce different rules produce
+results that look alike, which is the worst available outcome.
+
+**What C1 now enforces.** `evidence_engine.sdk` sits below
+`evidence_engine.bootstrap`, so the facade importing the composition root fails
+CI. One such import would drag the `server` extra into every embedded install
+and undo C9. Verified by reintroducing it: C1 broke.
+
 ---
 
 ## 4. Mistakes, and what they cost

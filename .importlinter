@@ -23,12 +23,19 @@ include_external_packages = True
 ; C1 - The dependency rule. §4.3: "Adapters -> Application -> Domain".
 ; Bootstrap sits above everything because it is the only place allowed to
 ; know every layer at once: it wires them.
+;
+; `sdk` sits below it and this is the machine-checked form of the SDK's
+; central constraint: the embedded facade composes adapters and must never
+; import `bootstrap`, which wires FastAPI, SQLAlchemy, Redis and an object
+; store. One import would drag the `server` extra into every embedded
+; install and undo C9, so the layering catches it rather than review.
 ; --------------------------------------------------------------------------
 [importlinter:contract:dependency-rule]
-name = C1 - Bootstrap -> Adapters -> Application -> Domain
+name = C1 - Bootstrap -> SDK -> Adapters -> Application -> Domain
 type = layers
 layers =
     evidence_engine.bootstrap
+    evidence_engine.sdk
     evidence_engine.adapters
     evidence_engine.application
     evidence_engine.domain
