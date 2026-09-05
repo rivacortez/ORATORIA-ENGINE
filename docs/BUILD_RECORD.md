@@ -322,7 +322,114 @@ and the file reports what happened.
 
 ## 6. Phase map: 3 through 10
 
-_Filled from the phase-mapping run. See §7 for the evidence._
+Mapped by eight independent read-only agents, one per phase, plus a cross-cut
+critic that ranked every buildable task into one order and looked for work
+nobody claimed. 473 tool calls. The maps are in the run transcript; what
+follows is what survives summarising.
+
+### The shape of it
+
+| Phase | Verdict | Buildable now | Blockers | Claims with no code |
+| --- | --- | ---: | ---: | ---: |
+| 3 Verbatim speech baseline | not started | 6 | 6 | 7 |
+| 4 Disfluency and prosody | blocked on data | 9 | 5 | 7 |
+| 5 Visual evidence | blocked on data | 10 | 5 | 10 |
+| 6 Multimodal fusion | partially done | 10 | 5 | 9 |
+| 7 Real-time hardening | partially done | 9 | 5 | 11 |
+| 8 OratorIA integration | not started | 9 | 6 | 7 |
+| 9 Scientific validation | blocked on data | 9 | 6 | 8 |
+| 10 Production readiness | partially done | 11 | 6 | 10 |
+
+Sixty-seven buildable tasks. **Sixty-nine claims that nothing enforces** — the
+column that matters most, because every one of them is a sentence the
+repository already makes.
+
+### What the critic said, and it is worth quoting
+
+> Not one of phases 3 through 10 can reach its exit criterion without the
+> corpus, the weights, the annotators and the host, and the sixty-seven tasks
+> the mappers found buildable would, if all completed, move the README's phase
+> table by zero rows — because almost every one of them repairs a claim the
+> repository already makes rather than adding capability the phases are named
+> for. […] The most uncomfortable part is that finishing every buildable task
+> would leave the project in a state that reads, correctly, as more rigorous
+> and no further along.
+
+That is right, and it is the reason this section exists rather than a burndown
+chart. What the unblocked work buys is narrower and still worth having:
+instruments that exist before there is anything to measure, refusals installed
+before the pressure arrives, and about six items with a hard field deadline
+that are cheap today and unrecoverable once forty speakers have been recorded.
+
+### The blockers are a chain, not a set
+
+    annotators → Pilot A and B → a closed speech taxonomy → recruitment and
+    recording → the held-out freeze → a provisioned host → a pinned executable
+    environment → baseline outputs → one NFR-001 number
+
+The earliest link is two trained people plus four audio confirmations that take
+a minute each, and it has not been started. Every engineering task in this
+repository sits downstream of it.
+
+### Ten things nobody had claimed
+
+Found by the cross-cut critic reading the repository's own documents against
+the eight maps. Four are now closed (§2); the rest are open and listed here so
+they are claimed by something.
+
+| Finding | State |
+| --- | --- |
+| The corpus schema had no consent field at all | **closed** — `ConsentRecord`, required |
+| No dataset card, and nothing tracking its absence | **closed** — template written |
+| The dialect axis was unreachable end to end | **closed** — property, flag, manifest, inventory |
+| NFR-015's seed had no home in any dataclass or column | **closed** — field, column, migration |
+| `DeleteEvidence.verify` checked only media, never evidence | **closed** — a session with surviving evidence verified as clean |
+| `tests/contract/golden/` does not exist | open — `.gitattributes` reserves it and it protects nothing |
+| Consent withdrawal has no entry point of its own | open — the only way to withdraw is to delete |
+| The whole batch path is unbuilt | open — `POST /v1/jobs` is published, `Scope.JOBS_WRITE` has no consumer |
+| FR-030's webhook delivery route has no adapter | open — only the WebSocket channel exists |
+| Nothing in the engine notices a second speaker | open — a two-speaker recording is evented as one |
+
+### What research changed about the blockers
+
+One of the four turned out not to exist, and one corpus turned out to be worse
+and more useful than expected. Both are recorded in `docs/governance/` with the
+queries that establish them; the summary is:
+
+- **The inference host is not a blocker for a pilot.** `whisper-large-v3` fp16
+  is 3.09 GB and fits the annotation workstation's 8 GB card. It remains a
+  blocker for any *reported* figure, by this project's own rule that a
+  development laptop never sources one.
+- **OpenSLR SLR73 is real, Peruvian, CC BY-SA, and read speech** — and its
+  collection protocol *re-recorded* takes containing stuttering or laughter.
+  Its disfluency rate is an artifact of Google's TTS quality control. That
+  makes it useless for the taxonomy and excellent as a **negative control**: a
+  detector run over it should almost never fire.
+- **PRESEEA has two Peruvian subcorpora**, Lima and Arequipa, with a tag set
+  that already marks hesitation, lengthening and truncation on genuinely
+  interactive speech. It is CC BY-NC-**ND**, so annotating it produces a
+  derivative the licence forbids; written permission from the coordinators is
+  the single gating request.
+- **`ctranslate2-crisperwhisper` cannot install on Windows at all** — fourteen
+  wheels, every one manylinux, no source distribution.
+
+### And one finding that changes the protocol
+
+The 250 ms boundary tolerance is this project's own invention. No disfluency
+annotation standard has a temporal dimension: Switchboard marks spans of words,
+the only Spanish disfluency corpus that faced the question declined to assign
+duration to pauses, filled pauses and lengthenings, and FluencyBank's
+time-aligned annotations were found unreliable and discarded.
+
+Meanwhile the strictly easier task already scores badly. SEP-28k measured three
+trained annotators on binary present/absent labels over pre-cut three-second
+clips — no timing at all — and reports Fleiss κ of **0.11 for prolongation**
+and 0.25 for blocks.
+
+`PILOT_PROTOCOL.md` now scopes tight temporal agreement to the classes with a
+sharp acoustic edge, reports `prolongation` and `silent_pause` presence-first,
+and instructs that the low coefficients be reported. Decided before two people
+are trained on it, which was the last moment it was free.
 
 ---
 
