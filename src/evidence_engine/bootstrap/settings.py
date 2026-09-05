@@ -87,6 +87,19 @@ class Settings(BaseSettings):
         description="HMAC key for short-lived stream tokens (§6.1 step 2).",
     )
 
+    #: A key the process registers at startup so that a local instance can be
+    #: called - including from its own Swagger page - without a provisioning
+    #: endpoint that does not exist yet.
+    #:
+    #: This is a development affordance and is written down as one. The memory
+    #: backend keeps keys in a dict that dies with the process, so `issue-key`
+    #: run in a shell cannot put anything into a *server's* directory; without
+    #: this, the documented API is readable and uncallable. It is refused
+    #: outside a local environment and refused with the persistent backend
+    #: (`reject_a_bootstrap_key_outside_local`), because a credential arriving
+    #: through an environment variable is exactly the habit §15.2 forbids.
+    bootstrap_api_key: str = ""
+
     # -- infrastructure ----------------------------------------------------
 
     database_url: str = ""
@@ -126,6 +139,51 @@ class Settings(BaseSettings):
                     "the secret manager (§15.2)"
                 )
         return value
+
+    @field_validator("bootstrap_api_key")
+    @classmethod
+    def _reject_a_guessable_bootstrap_key(cls, value: str) -> str:
+        """A short bootstrap key is worse than none.
+
+        Empty means the affordance is off, which is the normal case. A value
+        that is set has to look like a key the directory would have issued -
+        prefix and entropy - so that `ENGINE_BOOTSTRAP_API_KEY=dev` cannot open
+        an instance somebody exposed to a network for five minutes.
+        """
+        if not value:
+            return value
+        if not value.startswith("oek_") or len(value) < 32:
+            raise ValueError(
+                "bootstrap_api_key must look like an issued key: the 'oek_' prefix "
+                "and at least 32 characters. Generate one with "
+                "`uv run evidence-engine issue-key`, which prints the export line."
+            )
+        return value
+
+    def reject_a_bootstrap_key_outside_local(self) -> None:
+        """Refuse the development affordance anywhere it could matter.
+
+        Called at startup rather than as a field validator because it reads
+        three fields at once, and raising here means the process dies at boot
+        with a sentence instead of serving with a credential nobody meant to
+        deploy.
+        """
+        if not self.bootstrap_api_key:
+            return
+        if self.environment != "local":
+            raise ValueError(
+                f"ENGINE_BOOTSTRAP_API_KEY is set and ENGINE_ENVIRONMENT is "
+                f"{self.environment!r}. It is a local development affordance: a key "
+                "delivered through an environment variable is what §15.2 forbids. "
+                "Issue a real key through the control plane instead."
+            )
+        if self.backend is not Backend.MEMORY:
+            raise ValueError(
+                "ENGINE_BOOTSTRAP_API_KEY is set with a persistent backend. It "
+                "registers into the in-memory directory only; against Postgres it "
+                "would be silently ignored and you would be locked out believing "
+                "you were not."
+            )
 
     def require_infrastructure(self) -> None:
         """Fail fast when a non-memory backend is selected without its URLs."""

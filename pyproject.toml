@@ -121,6 +121,10 @@ ignore = [
 # The presentation runner. Its whole output is a report a person reads at a
 # terminal; there is nowhere else for it to go.
 "scripts/present.py" = ["T201"]
+# The operator command line. It prints a key the operator has to copy and a
+# configuration snapshot they have to read; routing either through structured
+# telemetry would put them in a log the person running the command never sees.
+"src/evidence_engine/bootstrap/cli.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evidence_engine", "corpus"]

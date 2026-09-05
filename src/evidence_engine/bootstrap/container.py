@@ -45,7 +45,11 @@ from evidence_engine.adapters.outbound.persistence.configuration import (
     InMemoryConfigurationStore,
     InMemoryModelRegistry,
 )
-from evidence_engine.adapters.outbound.persistence.identity import InMemoryApiKeyDirectory
+from evidence_engine.adapters.outbound.persistence.identity import (
+    ApiKeyRecord,
+    InMemoryApiKeyDirectory,
+    hash_secret,
+)
 from evidence_engine.adapters.outbound.persistence.in_memory import (
     InMemoryAuditLog,
     InMemoryEvidenceRepository,
@@ -90,6 +94,7 @@ from evidence_engine.application.ports.platform import (
     ModelRegistry,
     ModelVersion,
     QuotaGuard,
+    Scope,
     Telemetry,
 )
 from evidence_engine.application.ports.repositories import (
@@ -113,7 +118,13 @@ from evidence_engine.domain.evidence.cooccurrence import (
     DEFAULT_FUSION_WINDOW_MS,
     FusionWindow,
 )
-from evidence_engine.domain.shared.identifiers import ConfigurationSnapshotId, ModelVersionId
+from evidence_engine.domain.shared.identifiers import (
+    ApiKeyId,
+    ApplicationId,
+    ConfigurationSnapshotId,
+    ModelVersionId,
+    TenantId,
+)
 from evidence_engine.domain.shared.provenance import (
     Modality,
     SemanticVersion,
@@ -228,6 +239,7 @@ def build_container(
 ) -> Container:
     """Wire everything. Raises rather than degrading when a backend is missing."""
     settings.require_infrastructure()
+    settings.reject_a_bootstrap_key_outside_local()
 
     resolved_clock: Clock = clock or SystemClock()
     telemetry = StructlogTelemetry()
@@ -290,7 +302,12 @@ def build_container(
         quota = InMemoryQuotaGuard(resolved_clock, limits=quota_limits)
         configuration = InMemoryConfigurationStore(snapshot)
         registry = InMemoryModelRegistry()
-        api_keys = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+        directory = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+        if settings.bootstrap_api_key:
+            _register_the_bootstrap_key(
+                directory, settings.bootstrap_api_key, settings.api_key_pepper
+            )
+        api_keys = directory
 
     tokens = HmacStreamTokenMinter(settings.stream_token_signing_key)
 
@@ -399,6 +416,41 @@ def _build_runtimes(
         (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
     )
     return speech, vision
+
+
+#: Who the bootstrap key belongs to. Fixed rather than configurable so that a
+#: request made with it is identifiable as one in the audit log: `local` is not
+#: a tenant anybody provisioned, and evidence attributed to it should never be
+#: mistaken for evidence from a real study participant.
+BOOTSTRAP_TENANT = "local"
+BOOTSTRAP_APPLICATION = "local-development"
+
+
+def _register_the_bootstrap_key(
+    directory: InMemoryApiKeyDirectory, secret: str, pepper: str
+) -> None:
+    """Make one preset key authenticate, so a local instance can be called.
+
+    The scopes are every published scope. That is right here and wrong almost
+    everywhere else: this key exists to exercise the documented surface from
+    the docs page, and a key that could not reach half the endpoints would send
+    a reader hunting for a permissions bug that was a configuration choice.
+
+    Registered rather than issued, because the secret is already chosen - the
+    operator has it in their shell and needs the server to accept that exact
+    value. Only the peppered hash is stored, as with any other key (FR-002),
+    and the plaintext never reaches a log.
+    """
+    directory.register(
+        ApiKeyRecord(
+            id=ApiKeyId.generate(),
+            application=ApplicationId(BOOTSTRAP_APPLICATION),
+            tenant=TenantId(BOOTSTRAP_TENANT),
+            hashed_secret=hash_secret(secret, pepper),
+            prefix=secret[:10],
+            scopes=frozenset(Scope),
+        )
+    )
 
 
 def _register_versions(registry: ModelRegistry, *versions: tuple[Modality, ModelVersionId]) -> None:
