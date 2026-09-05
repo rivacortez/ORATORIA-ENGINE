@@ -8,6 +8,7 @@ to check.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date
 
 import pytest
 
@@ -15,8 +16,11 @@ from corpus.schema.records import (
     SCHEMA_VERSION,
     AnnotatedRecording,
     AnnotationPass,
+    ConsentBasis,
+    ConsentRecord,
     DisfluencyAnnotation,
     Interval,
+    RecordingConditions,
     Speaker,
     Word,
 )
@@ -25,6 +29,29 @@ from evidence_engine.domain.shared.taxonomy import (
     TAXONOMY_VERSION,
     ContextualRole,
     SpeechEventType,
+)
+
+#: A consent record and a capture chain that a freeze would accept.
+#:
+#: Not defaults on the record itself. `AnnotatedRecording` leaves both `None`,
+#: because a fixture placing two intervals 80 ms apart has no participant behind
+#: it and a field that is always filled because the constructor demanded it
+#: proves nothing about whether anybody was asked. These exist so that the tests
+#: which *are* about the corpus - inventory, split, freeze - can say so in one
+#: word instead of eight lines.
+CONSENT = ConsentRecord(
+    basis=ConsentBasis.WRITTEN_INFORMED,
+    policy_version=SemanticVersion(1, 0, 0),
+    granted_on=date(2026, 9, 1),
+)
+
+CONDITIONS = RecordingConditions(
+    microphone="Realtek(R) Audio - onboard array",
+    sample_rate_hz=16_000,
+    bit_depth=16,
+    channels=1,
+    virtual_audio_bypassed=True,
+    room_notes="",
 )
 
 
@@ -64,11 +91,19 @@ def recording(
     annotation_pass: AnnotationPass = AnnotationPass.FIRST,
     schema_version: SemanticVersion = SCHEMA_VERSION,
     taxonomy_version: SemanticVersion | None = TAXONOMY_VERSION,
+    consent: ConsentRecord | None = None,
+    conditions: RecordingConditions | None = None,
 ) -> AnnotatedRecording:
     """A record the validator accepts, unless a test deliberately breaks it.
 
     Two defaults exist so that a test about agreement mathematics is about
     agreement mathematics.
+
+    `consent` and `conditions` are *not* among them: they default to `None`,
+    which is what an in-code record honestly has. A helper that supplied them
+    would put a consent basis on every record in the suite and thereby make the
+    field's presence prove nothing - the tests that care pass `CONSENT` and
+    `CONDITIONS` explicitly, and the ones that do not are about arithmetic.
 
     The words tier is synthesized rather than left empty. An empty transcript
     is a validation *error* - lexical classes cannot be checked against
@@ -92,6 +127,8 @@ def recording(
         disfluencies=tuple(annotations),
         schema_version=schema_version,
         taxonomy_version=taxonomy_version,
+        consent=consent,
+        conditions=conditions,
     )
 
 
@@ -122,3 +159,56 @@ def word(text: str, start_ms: int, end_ms: int) -> Word:
 @pytest.fixture
 def filled_pause() -> SpeechEventType:
     return SpeechEventType.FILLED_PAUSE
+
+
+def template(path, **overrides):  # type: ignore[no-untyped-def]
+    """Write a template with the consent and capture chain a real one needs.
+
+    `write_template` requires the speaker's variety, a consent record and the
+    capture conditions, and requires them for a reason worth restating here:
+    all three are captured at recruitment or they are unreconstructable, so a
+    default would quietly produce a corpus that cannot be sliced by dialect and
+    cannot support a consent audit.
+
+    That reasoning is right and it makes every call eight arguments long. This
+    helper carries the ones a test is not about, so a test about overwrite
+    protection reads as a test about overwrite protection. Any of them can be
+    overridden by keyword.
+    """
+    from corpus.io.elan import write_template
+
+    arguments = {
+        "recording_id": "pilot-001",
+        "speaker_pseudonym": "P-001",
+        "speaker_variety": "es-PE",
+        "annotator_id": "ana",
+        "media_url": "pilot-001.wav",
+        "consent": CONSENT,
+        "conditions": CONDITIONS,
+    }
+    arguments.update(overrides)
+    write_template(path, **arguments)  # type: ignore[arg-type]
+
+
+#: The CLI flags that match `CONSENT` and `CONDITIONS` above, for tests that
+#: drive `corpus template` through `main()` rather than calling the writer.
+TEMPLATE_FLAGS = [
+    "--variety",
+    "es-PE",
+    "--consent-basis",
+    "written_informed",
+    "--consent-policy",
+    "1.0.0",
+    "--consent-granted",
+    "2026-09-01",
+    "--microphone",
+    "Realtek(R) Audio - onboard array",
+    "--sample-rate-hz",
+    "16000",
+    "--bit-depth",
+    "16",
+    "--channels",
+    "1",
+    "--virtual-audio-bypassed",
+    "yes",
+]

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from corpus.partition.freeze import (
+    MANIFEST_VERSION,
     FreezeError,
     freeze,
     from_json,
@@ -26,11 +27,17 @@ from corpus.partition.split import (
     Partition,
     split,
 )
-from corpus.schema.records import AnnotatedRecording, Speaker
+from corpus.schema.records import (
+    SCHEMA_VERSION,
+    AnnotatedRecording,
+    ConsentRecord,
+    RecordingConditions,
+    Speaker,
+)
 from corpus.schema.validation import Severity
 from evidence_engine.domain.shared.provenance import SemanticVersion
 from evidence_engine.domain.shared.taxonomy import SpeechEventType, p0_speech_events
-from tests.corpus.conftest import annotation, recording
+from tests.corpus.conftest import CONDITIONS, CONSENT, annotation, recording
 
 FILLED = SpeechEventType.FILLED_PAUSE
 PROLONG = SpeechEventType.PROLONGATION
@@ -43,13 +50,20 @@ def _recording(
     recording_id: str,
     events: list[tuple[SpeechEventType, int]],
     *,
-    variety: str = "es-PE",
+    variety: str | None = "es-PE",
+    consent: ConsentRecord | None = CONSENT,
+    conditions: RecordingConditions | None = CONDITIONS,
 ) -> AnnotatedRecording:
     """One speaker's recording, with a given number of each class.
 
     Built directly rather than through the `recording` helper so the speaker
     pseudonym can vary - the helper fixes it, because agreement is always about
     one speaker and partitioning never is.
+
+    Consent and conditions are filled in here and not in `recording`, because
+    this fixture stands for something a *corpus* contains: every recording that
+    reaches an inventory or a freeze came from a file, and the ELAN reader will
+    not produce one without them. A test that wants the absence passes `None`.
     """
     annotations = []
     cursor = 1_000
@@ -58,7 +72,9 @@ def _recording(
             annotations.append(annotation(event_type, cursor, cursor + 300, "ana"))
             cursor += 500
 
-    base = recording("ana", annotations, recording_id=recording_id)
+    base = recording(
+        "ana", annotations, recording_id=recording_id, consent=consent, conditions=conditions
+    )
     from dataclasses import replace
 
     return replace(base, speaker=Speaker(pseudonym=speaker, variety=variety))
@@ -568,8 +584,15 @@ def test_a_manifest_that_is_not_json_is_refused() -> None:
 
 
 def test_a_manifest_missing_a_field_is_refused() -> None:
+    """Read against `MANIFEST_VERSION` rather than a literal.
+
+    Hard-coding "1.0.0" here is what made this test stop testing what it says
+    the day the manifest version moved: the version check fired first and the
+    missing-field path was never reached, while the test still passed for the
+    wrong reason.
+    """
     with pytest.raises(FreezeError, match="missing or malformed"):
-        from_json(json.dumps({"manifest_version": "1.0.0"}))
+        from_json(json.dumps({"manifest_version": str(MANIFEST_VERSION)}))
 
 
 # ---------------------------------------------------------------------------
@@ -651,11 +674,20 @@ def test_freezing_a_plan_whose_recording_was_not_supplied_is_refused(
 
 
 def test_a_corpus_spanning_two_schema_versions_cannot_be_frozen(tmp_path: Path) -> None:
-    """One manifest cannot describe two record shapes."""
+    """One manifest cannot describe two record shapes.
+
+    The odd version is derived from `SCHEMA_VERSION` rather than written out.
+    It used to be the literal 2.0.0, which became the *current* version when the
+    schema gained consent and recording conditions - so the two records agreed,
+    nothing was refused, and the test failed loudly. It would have been just as
+    easy for it to keep passing while checking nothing.
+    """
     from dataclasses import replace
 
     recordings = _corpus(9)
-    recordings[0] = replace(recordings[0], schema_version=SemanticVersion(2, 0, 0))
+    recordings[0] = replace(
+        recordings[0], schema_version=SemanticVersion(SCHEMA_VERSION.major + 1, 0, 0)
+    )
     plan = split(inventory(recordings))
 
     with pytest.raises(FreezeError, match="schema versions"):

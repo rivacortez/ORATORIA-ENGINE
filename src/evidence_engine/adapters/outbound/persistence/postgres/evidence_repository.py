@@ -38,7 +38,10 @@ from evidence_engine.domain.evidence.cooccurrence import (
     FusionWindow,
     MultimodalCooccurrence,
 )
-from evidence_engine.domain.evidence.document import EvidenceDocument
+from evidence_engine.domain.evidence.document import (
+    EvidenceDocument,
+    assert_carries_no_ranking,
+)
 from evidence_engine.domain.quality.assessment import (
     ModalityAvailability,
     QualityAssessment,
@@ -91,6 +94,16 @@ class PostgresEvidenceRepository:
 
     async def store_document(self, document: EvidenceDocument, tenant: TenantId) -> None:
         payload = self._render(document)
+
+        # FR-029, on the only object in the system that is the published
+        # payload rather than a description of it. The application layer cannot
+        # do this - contract C6 forbids it importing the serializer - and the
+        # contract test that walks this same dict guarantees today's serializer,
+        # not this row. The row outlives the check: it is what a research
+        # export reads, what a future migration reads, and what a reader will
+        # quote in a results table long after the code that wrote it changed.
+        assert_carries_no_ranking(payload)
+
         async with unit_of_work(self._factory) as db:
             await db.merge(
                 models.EvidenceDocumentRow(
@@ -225,7 +238,9 @@ class PostgresEvidenceRepository:
         return list(
             (
                 await db.scalars(
-                    select(table).where(table.run_id == run_id, table.tenant_id == tenant.value)
+                    select(table)
+                    .where(table.run_id == run_id, table.tenant_id == tenant.value)
+                    .order_by(*_read_order(table))
                 )
             ).all()
         )
@@ -234,6 +249,31 @@ class PostgresEvidenceRepository:
 # ---------------------------------------------------------------------------
 # Row helpers
 # ---------------------------------------------------------------------------
+
+
+def _read_order(table: Any) -> list[Any]:
+    """The ORDER BY that reproduces the order the document was published in.
+
+    A ``SELECT`` without ``ORDER BY`` returns rows in whatever order the
+    executor finds convenient, and Postgres is entitled to change that between
+    two runs of the same query - after an autovacuum, or once the table is
+    large enough for a parallel sequential scan. ``GET /result`` rebuilds the
+    document from these rows and renders it straight to the wire, so without
+    this the published order of a consumer's evidence is the planner's whim.
+
+    That is an FR-029 problem, not only an NFR-015 one. A consumer reads the
+    first element of a list as the first thing that happened; a list ordered by
+    nothing at all still reads as ordered by something, and the reader supplies
+    the something.
+
+    ``(start_ms, end_ms, id)`` is the key ``transcript.build`` and
+    ``EvidenceDocument`` already use, so the rehydrated document satisfies the
+    constructor's ordering invariant by construction rather than by luck. The
+    cooccurrence table has no interval of its own - a pair carries two event
+    ids and a distance - so it falls back to its insertion key, which is the
+    order ``correlate`` emitted.
+    """
+    return [getattr(table, name) for name in ("start_ms", "end_ms", "id") if hasattr(table, name)]
 
 
 def _assessment_to_row(

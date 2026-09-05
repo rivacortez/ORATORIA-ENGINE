@@ -17,6 +17,11 @@ Every hypothesis carries the artifact digest that produced it. NFR-014 requires
 the model version on every derived event, and collecting it here rather than
 from deployment config is what keeps it true during a canary, when two versions
 are answering at once.
+
+``AudioWindow`` also refuses to be built from a declaration its own payload
+contradicts. The port is the last place that still holds both halves - the
+declared shape and the bytes - and once the window is handed on, a duration
+that is six times too long is indistinguishable from a speaker who paused.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from evidence_engine.domain.sessions.capabilities import SUPPORTED_SAMPLE_RATES_HZ
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
@@ -34,6 +40,17 @@ from evidence_engine.domain.shared.taxonomy import (
 )
 from evidence_engine.domain.visual_events.events import GazeDirection
 
+#: The shape a decoded window is in unless it says otherwise: one channel of
+#: 16-bit samples. These are the engine's own decode target, not a guess about
+#: what the client sent - §7.2 gives the wire no field for either, so a window
+#: carrying anything else has to declare it here rather than be inferred.
+DEFAULT_CHANNEL_COUNT = 1
+DEFAULT_SAMPLE_WIDTH_BYTES = 2
+
+
+class MisdeclaredAudioWindow(Exception):
+    """A window's declared shape does not describe the audio it carries."""
+
 
 @dataclass(frozen=True, slots=True)
 class AudioWindow:
@@ -42,6 +59,14 @@ class AudioWindow:
     Carries its own position on the session clock. A runtime that had to infer
     where it was from call order would produce wrong timestamps the first time
     a window was retried after a timeout (§6.3), and retries are expected.
+
+    The declared shape is checked against ``samples`` on construction, because
+    nothing downstream can do it. ``StreamingCoordinator`` ends the window at
+    ``session_position_ms + duration_ms`` and the runtime hears whatever bytes
+    arrived; when those two disagree, the transcript still renders, the events
+    still carry provenance, and every boundary is scaled by the ratio between
+    them. NFR-004's 250 ms target would then be measured against a clock that
+    is lying, which is worse than having no target at all.
     """
 
     session_position_ms: int
@@ -49,6 +74,90 @@ class AudioWindow:
     sample_rate_hz: int
     samples: bytes
     is_final_window: bool = False
+    #: The framing ``samples`` uses. Declared rather than assumed because the
+    #: consistency check divides by it: a stereo payload checked as mono counts
+    #: twice the frames it has, and so agrees with a declaration of twice its
+    #: real length - the exact class of error the check exists to catch.
+    channel_count: int = DEFAULT_CHANNEL_COUNT
+    sample_width_bytes: int = DEFAULT_SAMPLE_WIDTH_BYTES
+
+    def __post_init__(self) -> None:
+        _require_declaration_matches_payload(self)
+
+
+def _require_declaration_matches_payload(window: AudioWindow) -> None:
+    """Refuse a window whose declaration and payload describe different audio.
+
+    Every failure below renders. The runtime returns hypotheses, the assembler
+    calibrates them, the coordinator finalizes through the declared end of the
+    window, and the client receives a transcript at times that look entirely
+    plausible - they are simply about a different stretch of the recording than
+    the one the speaker produced. A note at the bottom of a report does not
+    survive being copied into a results table, so the window is refused here.
+
+    The checks run in this order because each one is the next one's premise:
+    the sample rate is the divisor that turns frames into milliseconds, and the
+    framing is the divisor that turns bytes into frames.
+    """
+    if window.duration_ms <= 0:
+        raise MisdeclaredAudioWindow(
+            f"a window at {window.session_position_ms} ms declares "
+            f"{window.duration_ms} ms of audio. The window ends at "
+            "session_position_ms + duration_ms, so a non-positive duration ends it at "
+            "or before its own start: nothing it carries is ever reached by the stable "
+            "frontier, and the audio drops out of the timeline without a gap being "
+            "reported. Zero is also what an undeclared chunk defaults to on the wire, "
+            "which is why it is refused rather than tolerated as an empty window."
+        )
+
+    if window.sample_rate_hz not in SUPPORTED_SAMPLE_RATES_HZ:
+        raise MisdeclaredAudioWindow(
+            f"a window declares {window.sample_rate_hz} Hz, which FR-006 never "
+            f"negotiates; accepted: {sorted(SUPPORTED_SAMPLE_RATES_HZ)}. The declared "
+            "rate is what converts a byte count into a duration, so a window timed at "
+            "a rate it was not decoded at scales every boundary by the ratio between "
+            "the two: 48 kHz read as 16 kHz stretches a 250 ms event to 750 ms, and "
+            "nothing about the result looks wrong."
+        )
+
+    if window.channel_count < 1 or window.sample_width_bytes < 1:
+        raise MisdeclaredAudioWindow(
+            f"a window declares {window.channel_count} channel(s) of "
+            f"{window.sample_width_bytes}-byte samples. Neither can be below one; a "
+            "zero makes the frame size zero and leaves the duration undefined rather "
+            "than wrong, which is the one failure that would reach a reader as a "
+            "crash instead of as a number."
+        )
+
+    frame_bytes = window.channel_count * window.sample_width_bytes
+    leftover = len(window.samples) % frame_bytes
+    if leftover:
+        raise MisdeclaredAudioWindow(
+            f"a window carries {len(window.samples)} bytes, which is not a whole "
+            f"number of {frame_bytes}-byte frames ({leftover} left over). Either the "
+            "payload was truncated in transit or it is not in the framing it declares. "
+            "Both mean the frame count - and every timestamp derived from it - would "
+            "be computed from a sample boundary that is not there."
+        )
+
+    # Integer form of ``abs(frames / sample_rate_hz * 1000 - duration_ms) <= 1``,
+    # multiplied through by the rate so that nothing here is decided by a float.
+    # One millisecond is the resolution the declaration itself is written in
+    # (§7.4 ``duration_ms``), so a client that rounds and a client that truncates
+    # both pass, and anything larger is a disagreement rather than a rounding
+    # difference.
+    frames = len(window.samples) // frame_bytes
+    if abs(frames * 1_000 - window.duration_ms * window.sample_rate_hz) > window.sample_rate_hz:
+        carried_ms = frames * 1_000 / window.sample_rate_hz
+        raise MisdeclaredAudioWindow(
+            f"a window at {window.session_position_ms} ms declares "
+            f"{window.duration_ms} ms but carries {carried_ms:.1f} ms - {frames} frames "
+            f"of {frame_bytes} bytes at {window.sample_rate_hz} Hz. The coordinator "
+            "times this window by the declaration and the runtime hears the payload, "
+            "so every word, event boundary and prosody reading it produces would be "
+            "placed at a moment the speaker was somewhere else, and each later window "
+            "inherits the same offset."
+        )
 
 
 @dataclass(frozen=True, slots=True)

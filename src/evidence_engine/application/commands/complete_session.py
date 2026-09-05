@@ -13,10 +13,22 @@ co-occurrence message for the same reason: a correlation between two events one
 of which is later revised would be a claim the engine has to withdraw, which
 §6.1 step 9 does not allow.
 
-*The document is assembled and checked.* ``assert_carries_no_ranking`` walks the
-serialized payload before it is stored. That check is redundant with the
-domain's ``ClassVar`` in the normal case and exists for the abnormal one: a
-model runtime that forwards its own ordering inside an event payload.
+*The document is assembled in canonical time order.* Events arrive keyed by id
+and a streaming runtime may revise one long after a later one arrived, so
+``state.speech_events.values()`` is in arrival order, not clock order. FR-029
+makes that difference matter: a consumer reads position 0 as "first", so the
+sequence order is a claim, and the only order that claims nothing is the
+recording's own. Sorting here rather than in the serializer means the stored
+rows, the streamed messages and the published document cannot disagree.
+
+This function does *not* walk the serialized payload, and an earlier version
+that claimed to did not either - it built a two-key stub of its own and walked
+that, which could not fail, because the code building it only ever wrote ``id``
+and ``type``. The application layer cannot walk the real payload: the
+serializer lives in the inbound REST adapter and contract C6 forbids importing
+it from here. The walk therefore lives where the payload actually exists,
+in ``PostgresEvidenceRepository.store_document``, and the ordering half lives in
+``EvidenceDocument.__post_init__`` where every construction path meets.
 """
 
 from __future__ import annotations
@@ -42,7 +54,6 @@ from evidence_engine.application.workflows.streaming import StreamingState
 from evidence_engine.domain.evidence.document import (
     EvidenceDocument,
     ProvenanceManifest,
-    assert_carries_no_ranking,
 )
 from evidence_engine.domain.quality.assessment import (
     QualityAssessment,
@@ -102,8 +113,12 @@ class CompleteSession:
 
         quality = self._with_transport_quality(state, session, wall_ms)
 
-        speech_events = tuple(event.finalize() for event in state.speech_events.values())
-        visual_events = tuple(event.finalize() for event in state.visual_events.values())
+        speech_events = tuple(
+            sorted((event.finalize() for event in state.speech_events.values()), key=_time_order)
+        )
+        visual_events = tuple(
+            sorted((event.finalize() for event in state.visual_events.values()), key=_time_order)
+        )
 
         cooccurrences = fuse(speech_events, visual_events, configuration.fusion_window)
 
@@ -135,14 +150,6 @@ class CompleteSession:
             visual_events=bundle.visual_events,
             prosody=bundle.prosody,
             cooccurrences=bundle.cooccurrences,
-        )
-
-        # Belt and braces before anything leaves this process (FR-029).
-        assert_carries_no_ranking(
-            {
-                "speech_events": [{"id": e.id.value, "type": e.type.value} for e in speech_events],
-                "visual_events": [{"id": e.id.value, "type": e.type.value} for e in visual_events],
-            }
         )
 
         await self._evidence.store(bundle)
@@ -217,6 +224,22 @@ class CompleteSession:
             )
 
         return state.quality.extended(assessments)
+
+
+def _time_order(event: SpeechEvent | VisualEvent) -> tuple[int, int, str]:
+    """The canonical published order for a sequence of events.
+
+    The same key ``transcript.build`` imposes on word tokens, reused rather
+    than reinvented: two orderings that can disagree are worse than one, and
+    the disagreement would surface as a transcript and an event list that tell
+    different stories about which came first.
+
+    The tie-break on the id matters. Two events can share a start - a window
+    seam produces overlapping hypotheses - and without it the published order
+    of those two would follow dictionary insertion, which NFR-015 requires to
+    be reproducible and which arrival timing decides.
+    """
+    return event.interval.start.ms, event.interval.end.ms, event.id.value
 
 
 def _loss_ratio(missing: int, highest_seen: int) -> float:

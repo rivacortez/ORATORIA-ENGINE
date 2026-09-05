@@ -6,6 +6,15 @@ Six verbs, in the order the work happens.
 ``validate`` checks what came back, ``agreement`` measures two of them against
 each other and lists what has to be adjudicated.
 
+``template`` takes more flags than looks comfortable, and the discomfort is the
+point. The speaker's variety, the consent basis and policy version, and the
+capture chain are all captured at recruitment or never: forty speakers recorded
+without them cannot be sliced by dialect, cannot support a consent audit, and
+cannot be stratified by microphone. None of them defaults, because a default
+would be this tool asserting on the operator's behalf something only the
+operator can know - and the assertion would be indistinguishable, afterwards,
+from one somebody actually made.
+
 *While building the corpus (Phase 1).* ``inventory`` says whether there is
 enough of each class from enough different speakers to carry a per-class
 figure, and exits non-zero while there is not - it is the command a recording
@@ -27,6 +36,7 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -44,15 +54,24 @@ from corpus.agreement.report import (
     compare,
 )
 from corpus.io.elan import ElanError, read, write_template
-from corpus.partition.freeze import freeze, from_json, to_json, verify
+from corpus.partition.freeze import FreezeError, freeze, from_json, to_json, verify
 from corpus.partition.inventory import (
     DEFAULT_MINIMUM_INSTANCES,
     DEFAULT_MINIMUM_SPEAKERS,
+    InventoryError,
     inventory,
 )
 from corpus.partition.split import split
-from corpus.schema.records import AnnotatedRecording, AnnotationPass
+from corpus.schema.records import (
+    AnnotatedRecording,
+    AnnotationPass,
+    ConsentBasis,
+    ConsentRecord,
+    RecordingConditions,
+    SchemaViolation,
+)
 from corpus.schema.validation import validate
+from evidence_engine.domain.shared.provenance import SemanticVersion
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -76,14 +95,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         # files are readable and must not be compared".
         print(f"refused: {error}", file=sys.stderr)
         return 3
-    except (InvalidMatchParameters, InvalidReportParameters) as error:
+    except (InvalidMatchParameters, InvalidReportParameters, SchemaViolation) as error:
         # Exit 2, argparse's code for a usage error, because that is what this
         # is: the files are fine and the numbers asked for are not. Caught here
         # rather than left to propagate - `corpus agreement --iou 0` used to
         # print a Python traceback at an annotator, which reads as "the tool is
         # broken" rather than "that threshold means nothing".
+        #
+        # `SchemaViolation` joins them because the values that build a consent
+        # record and a set of recording conditions arrive as flags: `corpus
+        # template --channels 0` is the same class of mistake as `--iou 0`.
         print(f"error: {error}", file=sys.stderr)
         return 2
+    except (FreezeError, InventoryError) as error:
+        # Exit 1, matching `_split`'s own refusal to freeze an unusable plan.
+        # These used to escape as tracebacks because they were unreachable in
+        # practice - a version disagreement across a whole corpus is rare. The
+        # consent and capture-chain refusals are not rare: they fire the first
+        # time somebody forgets to confirm that Voicemeeter was out of the path,
+        # and a traceback at that moment reads as a broken tool.
+        print(f"refused: {error}", file=sys.stderr)
+        return 1
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -100,8 +132,51 @@ def _parser() -> argparse.ArgumentParser:
     template.add_argument("output", type=Path)
     template.add_argument("--recording-id", required=True)
     template.add_argument("--speaker", required=True, help="pseudonym, never a real name")
+    template.add_argument(
+        "--variety",
+        required=True,
+        help="language tag such as es-PE; §14.2 asks for error analysis by dialect",
+    )
     template.add_argument("--annotator", required=True)
     template.add_argument("--media", required=True, help="path or URL of the audio or video")
+    # Consent and capture conditions. Every one of them is `required=True`, and
+    # the omission is deliberate in each case: a default would be this tool
+    # asserting, on nobody's behalf, something only the operator can know. The
+    # consent policy version is not read from the repository for the same
+    # reason - the participant read a printed wording on a day, and a constant
+    # in code would attest to whatever was checked in at template time.
+    template.add_argument(
+        "--consent-basis", required=True, choices=[item.value for item in ConsentBasis]
+    )
+    template.add_argument(
+        "--consent-policy",
+        required=True,
+        type=_semantic_version,
+        metavar="X.Y.Z",
+        help="the published version of CONSENT_AND_RETENTION.md the participant read",
+    )
+    template.add_argument("--consent-granted", required=True, type=_iso_date, metavar="YYYY-MM-DD")
+    template.add_argument(
+        "--consent-covers-video",
+        action="store_true",
+        help="video is opt-in (policy §6); without this the consent covers audio only",
+    )
+    template.add_argument(
+        "--microphone", required=True, help="the physical device as it enumerates"
+    )
+    template.add_argument("--sample-rate-hz", required=True, type=int)
+    template.add_argument("--bit-depth", required=True, type=int)
+    template.add_argument("--channels", required=True, type=int)
+    template.add_argument(
+        "--virtual-audio-bypassed",
+        required=True,
+        choices=["yes", "no"],
+        help=(
+            "NVIDIA Broadcast and Voicemeeter out of the path, confirmed from the "
+            "recorded file rather than a settings dialog"
+        ),
+    )
+    template.add_argument("--room-notes", default="")
     template.add_argument(
         "--pass",
         dest="annotation_pass",
@@ -185,13 +260,51 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _iso_date(text: str) -> date:
+    """A date argument, refused by argparse rather than by a traceback.
+
+    Parsed with ``type=`` so a mistyped date exits 2 with a usage message. The
+    alternative - parsing inside the handler - turns ``--consent-granted
+    2026-13-01`` into a ``ValueError`` traceback, which reads as a broken tool
+    at exactly the moment an operator is entering forty participants.
+    """
+    try:
+        return date.fromisoformat(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not an ISO-8601 date such as 2026-09-04"
+        ) from error
+
+
+def _semantic_version(text: str) -> SemanticVersion:
+    try:
+        return SemanticVersion.parse(text)
+    except Exception as error:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a version such as 1.0.0") from error
+
+
 def _template(args: argparse.Namespace) -> int:
     write_template(
         args.output,
         recording_id=args.recording_id,
         speaker_pseudonym=args.speaker,
+        speaker_variety=args.variety,
         annotator_id=args.annotator,
         media_url=args.media,
+        consent=ConsentRecord(
+            basis=ConsentBasis(args.consent_basis),
+            policy_version=args.consent_policy,
+            granted_on=args.consent_granted,
+            covers_video=args.consent_covers_video,
+        ),
+        conditions=RecordingConditions(
+            microphone=args.microphone,
+            sample_rate_hz=args.sample_rate_hz,
+            bit_depth=args.bit_depth,
+            channels=args.channels,
+            virtual_audio_bypassed=args.virtual_audio_bypassed == "yes",
+            room_notes=args.room_notes,
+        ),
         annotation_pass=AnnotationPass(args.annotation_pass),
         overwrite=args.force,
     )
@@ -298,6 +411,7 @@ def _inventory(args: argparse.Namespace) -> int:
                     "events": corpus.event_count,
                     "minimum_instances": args.min_instances,
                     "minimum_speakers": args.min_speakers,
+                    "varieties": dict(corpus.variety_speaker_counts),
                     "classes": [
                         {
                             "event_type": verdict.event_type,
@@ -323,6 +437,15 @@ def _inventory(args: argparse.Namespace) -> int:
             f"  a class needs {args.min_instances} instance(s) from "
             f"{args.min_speakers} speaker(s) to carry a per-class figure\n"
         )
+        # Printed unconditionally, including when there is one variety. "40
+        # speakers, all es-PE" is the finding §14.2's error analysis by dialect
+        # needs while there is still time to recruit; printing it only when the
+        # corpus is already mixed would report the answer and suppress the
+        # problem.
+        print("  by variety (speakers):")
+        for variety, count in corpus.variety_speaker_counts.items():
+            print(f"    {variety:<16} {count:>5}")
+        print()
         for verdict in verdicts:
             mark = "ok" if verdict.is_adequate else "SHORT"
             print(

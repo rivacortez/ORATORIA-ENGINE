@@ -35,7 +35,7 @@ def _eaf(
     events: list[tuple[str, int, int]],
     recording_id: str = "pilot-a-001",
     annotation_pass: str = "first",
-    schema_version: str = "1.0.0",
+    schema_version: str = "2.0.0",
     taxonomy_version: str = "1.0.0",
 ) -> str:
     """A filled EAF, written literally rather than through the writer.
@@ -109,6 +109,16 @@ def _eaf(
         <PROPERTY NAME="annotation_pass">{annotation_pass}</PROPERTY>
         <PROPERTY NAME="{PROP_SCHEMA}">{schema_version}</PROPERTY>
         <PROPERTY NAME="{PROP_TAXONOMY}">{taxonomy_version}</PROPERTY>
+        <PROPERTY NAME="speaker_variety">es-PE</PROPERTY>
+        <PROPERTY NAME="consent_basis">written_informed</PROPERTY>
+        <PROPERTY NAME="consent_policy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="consent_granted_on">2026-09-01</PROPERTY>
+        <PROPERTY NAME="consent_covers_video">false</PROPERTY>
+        <PROPERTY NAME="microphone">Realtek(R) Audio - onboard array</PROPERTY>
+        <PROPERTY NAME="sample_rate_hz">16000</PROPERTY>
+        <PROPERTY NAME="bit_depth">16</PROPERTY>
+        <PROPERTY NAME="channels">1</PROPERTY>
+        <PROPERTY NAME="virtual_audio_bypassed">true</PROPERTY>
     </HEADER>
     <TIME_ORDER>{"".join(slots)}</TIME_ORDER>
     <TIER LINGUISTIC_TYPE_REF="verbatim" TIER_ID="words">{"".join(words)}</TIER>

@@ -42,6 +42,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from evidence_engine.domain.shared.provenance import MAX_SEED
+
+
+def _seed_xor_reason(name: str) -> CheckConstraint:
+    """A row records a seed or the reason it has none, never both or neither.
+
+    The same shape as ``ck_prosody_measured_xor_unavailable`` and for the same
+    reason: a nullable ``seed`` on its own is a column a query can read as zero
+    or as absent depending on who wrote the query, and NFR-015 turns on those
+    being different answers. The upper bound is folded in rather than left to
+    the domain constructor, because a direct write or a bad migration bypasses
+    every Python check and this is the one line it does not bypass.
+    """
+    return CheckConstraint(
+        f"(seed is not null and seed between 0 and {MAX_SEED} and seed_reason is null) "
+        "or (seed is null and seed_reason is not null)",
+        name=name,
+    )
+
 
 class Base(DeclarativeBase):
     """Declarative base for every table in the engine."""
@@ -217,9 +236,17 @@ class SpeechEventRow(Base):
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: NFR-015's fourth term, denormalized onto the event row for the same
+    #: reason the other provenance fields are: the seed a run consumed is a
+    #: property of the evidence, and reaching it through a join to the
+    #: configuration would answer a different question - what the run was
+    #: configured to use, not what it used.
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         Index("ix_speech_event_run_position", "run_id", "start_ms"),
+        _seed_xor_reason("ck_speech_event_seed_xor_reason"),
         # The role vocabulary is closed (FR-013). A constraint here means a bad
         # migration or a direct write cannot introduce a role the domain would
         # refuse, which is the one path that bypasses the domain entirely.
@@ -255,10 +282,14 @@ class VisualEventRow(Base):
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Same pair, same rule, as ``SpeechEventRow``.
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         Index("ix_visual_event_run_position", "run_id", "start_ms"),
         CheckConstraint("confidence between 0 and 1", name="ck_visual_event_confidence"),
+        _seed_xor_reason("ck_visual_event_seed_xor_reason"),
     )
 
 
@@ -402,7 +433,16 @@ class EvidenceDocumentRow(Base):
 
 
 class ConfigurationSnapshotRow(Base):
-    """§8 ``ConfigurationSnapshot``. Immutable once published (US-008)."""
+    """§8 ``ConfigurationSnapshot``. Immutable once published (US-008).
+
+    The seed is a column rather than another key inside ``payload``, and the
+    reason is the immutability check in ``PostgresConfigurationStore.freeze``:
+    it compares payloads whole. Adding a key to the payload would make every
+    snapshot published before this change compare unequal to itself the next
+    time a session froze it, and ``freeze`` would refuse - so the first session
+    after deployment would fail on an existing tenant with a correct
+    configuration.
+    """
 
     __tablename__ = "configuration_snapshot"
 
@@ -411,9 +451,13 @@ class ConfigurationSnapshotRow(Base):
     pipeline_version: Mapped[str] = mapped_column(String(32), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    __table_args__ = (_seed_xor_reason("ck_configuration_seed_xor_reason"),)
 
 
 class ModelVersionRow(Base):

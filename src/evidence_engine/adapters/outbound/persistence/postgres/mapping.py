@@ -40,7 +40,15 @@ from evidence_engine.domain.shared.measurement import (
     UnavailabilityReason,
     Unavailable,
 )
-from evidence_engine.domain.shared.provenance import Modality, Provenance, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    Provenance,
+    Seed,
+    Seeded,
+    SemanticVersion,
+    Unseeded,
+    UnseededReason,
+)
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
     ProsodicIndicator,
@@ -177,6 +185,7 @@ def row_to_token(row: models.WordTokenRow) -> WordToken:
 
 
 def speech_event_to_row(event: SpeechEvent, run_id: str, tenant: TenantId) -> models.SpeechEventRow:
+    seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.SpeechEventRow(
         id=event.id.value,
         run_id=run_id,
@@ -194,6 +203,8 @@ def speech_event_to_row(event: SpeechEvent, run_id: str, tenant: TenantId) -> mo
         taxonomy_version=str(event.provenance.taxonomy_version),
         configuration_id=event.provenance.configuration.value,
         evidence_ref=event.provenance.evidence_ref.value,
+        seed=seed,
+        seed_reason=seed_reason,
     )
 
 
@@ -211,6 +222,7 @@ def row_to_speech_event(row: models.SpeechEventRow) -> SpeechEvent:
 
 
 def visual_event_to_row(event: VisualEvent, run_id: str, tenant: TenantId) -> models.VisualEventRow:
+    seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.VisualEventRow(
         id=event.id.value,
         run_id=run_id,
@@ -228,6 +240,8 @@ def visual_event_to_row(event: VisualEvent, run_id: str, tenant: TenantId) -> mo
         taxonomy_version=str(event.provenance.taxonomy_version),
         configuration_id=event.provenance.configuration.value,
         evidence_ref=event.provenance.evidence_ref.value,
+        seed=seed,
+        seed_reason=seed_reason,
     )
 
 
@@ -308,4 +322,43 @@ def _provenance(
         taxonomy_version=SemanticVersion.parse(row.taxonomy_version),
         configuration=ConfigurationSnapshotId(row.configuration_id),
         evidence_ref=EvidenceRef(row.evidence_ref),
+        seed=seed_from_columns(row.seed, row.seed_reason),
     )
+
+
+# ---------------------------------------------------------------------------
+# Seed columns (NFR-015)
+# ---------------------------------------------------------------------------
+#
+# Shared by the event rows and the configuration snapshot row, which carry the
+# same pair of columns under the same check constraint. Two callers writing
+# the pair by hand is two chances to write the seed and leave the reason set.
+
+
+def seed_to_columns(seed: Seed) -> tuple[int | None, str | None]:
+    """Split a seed onto its ``(seed, seed_reason)`` columns.
+
+    The branch is the database-side half of NFR-015, exactly as
+    ``prosody_to_row`` is FR-025's: one column or the other is written, never
+    both and never neither, and the check constraint refuses anything else.
+    """
+    if isinstance(seed, Seeded):
+        return seed.value, None
+    return None, seed.reason.value
+
+
+def seed_from_columns(seed: int | None, reason: str | None) -> Seed:
+    """Rebuild a seed from its columns.
+
+    Both null means the row predates the columns, and ``NOT_RECORDED`` is the
+    literal truth about it. An unrecognised reason string is *not* folded into
+    ``NOT_RECORDED``: that would report "no seed was recorded" about a row that
+    plainly recorded one, and the mapping seam is where a lie like that becomes
+    permanent. It raises, which is what a database written by a newer schema
+    than the running code should do.
+    """
+    if seed is not None:
+        return Seeded(seed)
+    if reason is None:
+        return Unseeded(UnseededReason.NOT_RECORDED)
+    return Unseeded(UnseededReason(reason))

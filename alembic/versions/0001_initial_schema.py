@@ -101,8 +101,11 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	pipeline_version VARCHAR(32) NOT NULL,
         	schema_version VARCHAR(32) NOT NULL,
         	payload JSONB NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
-        	PRIMARY KEY (id)
+        	PRIMARY KEY (id),
+        	CONSTRAINT ck_configuration_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null))
         )
     """,
     """
@@ -309,7 +312,10 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
         	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
+        	CONSTRAINT ck_speech_event_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
         	CONSTRAINT ck_speech_event_role CHECK (context_role is null or context_role in ('filler','semantic','discourse_marker','uncertain')),
         	CONSTRAINT ck_speech_event_confidence CHECK (confidence between 0 and 1),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
@@ -342,8 +348,11 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
         	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
         	CONSTRAINT ck_visual_event_confidence CHECK (confidence between 0 and 1),
+        	CONSTRAINT ck_visual_event_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
         )
     """,

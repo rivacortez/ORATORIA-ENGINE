@@ -16,9 +16,40 @@ running one command:
 - Has any file in it changed since?
 - Was any recording added, removed, or moved between partitions?
 
-The manifest is the machine-readable half of the dataset card §4 asks for. The
-half a human writes - consent basis, recording conditions, why these speakers -
-is prose and belongs beside it, not in it.
+The manifest is the machine-readable half of the dataset card §4 asks for, and
+it now carries the machine-readable *parts* of what §4 lists: the consent basis
+and policy version per recording, the capture chain per recording, and the
+speaker's variety. Those used to be described here as "the half a human writes",
+which was true of *why these speakers* and false of the rest - a consent basis
+is an enumerated value and a sample rate is an integer, and a prose dataset card
+carrying them cannot be checked against the corpus it describes. What stays
+prose is the reasoning: why these speakers, why this room, what the recruitment
+missed.
+
+**Why the freeze refuses more than it used to.** §4 makes this manifest the
+thing a result is defended with, so every value in it has to mean what a reader
+will take it to mean. Four refusals follow from that and each one names a number
+that would otherwise render perfectly and be about something else:
+
+- **No consent record.** A manifest entry with a blank consent basis is read as
+  "not applicable" and cannot be told from "nobody asked".
+- **Withdrawn consent.** US-005 grants withdrawal without justification and the
+  policy's deletion flow removes the file; freezing the participant into a
+  held-out set makes the withdrawal undoable in practice.
+- **No variety.** §14.2 asks for error analysis by dialect. A null variety in
+  one row of forty either drops that speaker from every slice or lands them in a
+  bucket nobody named.
+- **A capture chain that was not bypassed.** `REFERENCE_ENVIRONMENT.md` is
+  explicit: NVIDIA Broadcast suppresses breath, creak and the trailing energy of
+  a cut-off word, which is the acoustic evidence for three of the nine classes.
+  A per-class F1 over enhanced audio is a figure about the enhancer.
+
+What is deliberately *not* refused is a corpus that mixes sample rates or
+consent policy versions. Both are analysable rather than fatal: §14.2 asks for
+error analysis by audio quality, which needs the variation recorded rather than
+excluded, and a policy amended mid-recruitment leaves two validly consented
+cohorts. Refusing them would be the tool making a methodological decision that
+belongs to the methodologist.
 """
 
 from __future__ import annotations
@@ -27,17 +58,30 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from corpus.partition.split import Partition, PartitionPlan
-from corpus.schema.records import AnnotatedRecording
+from corpus.schema.records import (
+    AnnotatedRecording,
+    ConsentBasis,
+    ConsentRecord,
+    RecordingConditions,
+    SchemaViolation,
+)
 from corpus.schema.validation import Finding, Severity
 from evidence_engine.domain.shared.provenance import SemanticVersion
 
 #: Bumped when the manifest's shape changes. Separate from the annotation
 #: schema version: a manifest can gain a field without any annotation record
 #: changing, and a reader has to be able to tell the two apart.
-MANIFEST_VERSION = SemanticVersion(1, 0, 0)
+#:
+#: 2.0.0 rather than 1.1.0 for the reason ``SCHEMA_VERSION`` gives: the new
+#: per-recording fields are required, so a 1.0.0 manifest is not this shape with
+#: fields missing. A minor bump would pass ``is_compatible_with`` and then fail
+#: in ``from_json`` with a ``KeyError`` reported as "missing or malformed",
+#: which points at a corrupt file rather than at an old one.
+MANIFEST_VERSION = SemanticVersion(2, 0, 0)
 
 
 class FreezeError(Exception):
@@ -50,6 +94,9 @@ class FrozenRecording:
 
     recording_id: str
     speaker_pseudonym: str
+    #: The dialect axis, carried per recording so a held-out slice by variety is
+    #: computable from the manifest alone.
+    speaker_variety: str
     partition: str
     source_path: str
     #: SHA-256 of the annotation file's bytes. The bytes, not the parsed
@@ -59,6 +106,12 @@ class FrozenRecording:
     #: them.
     sha256: str
     duration_ms: int
+    #: The domain records themselves rather than eleven flattened columns. A
+    #: second definition of what consent is would drift from the first, and it
+    #: would drift silently: the manifest would keep serialising whatever fields
+    #: were listed here on the day somebody added one to ``ConsentRecord``.
+    consent: ConsentRecord
+    conditions: RecordingConditions
     class_counts: Mapping[str, int]
 
 
@@ -124,10 +177,13 @@ def freeze(
                 FrozenRecording(
                     recording_id=recording_id,
                     speaker_pseudonym=recording.speaker.pseudonym,
+                    speaker_variety=_required_variety(recording),
                     partition=contents.partition.value,
                     source_path=source.name,
                     sha256=digest_of(source),
                     duration_ms=recording.duration_ms,
+                    consent=_freezable_consent(recording),
+                    conditions=_freezable_conditions(recording),
                     class_counts=_class_counts(recording),
                 )
             )
@@ -145,6 +201,87 @@ def freeze(
         digest="",
     )
     return _with_digest(corpus)
+
+
+def _required_variety(recording: AnnotatedRecording) -> str:
+    """The speaker's variety, or a refusal naming the recording.
+
+    Named, because "a recording has no variety" sends somebody through forty
+    files by hand and the tool already knows which one.
+    """
+    variety = recording.speaker.variety
+    if variety is None:
+        raise FreezeError(
+            f"{recording.recording_id!r} (speaker {recording.speaker.pseudonym!r}) has no "
+            "variety. §14.2 asks for error analysis by dialect, and a null variety in one "
+            "row of forty either drops that speaker from every slice or lands them in a "
+            "bucket nobody named. It is recorded at recruitment or not at all."
+        )
+    return variety
+
+
+def _freezable_consent(recording: AnnotatedRecording) -> ConsentRecord:
+    """The consent this recording was collected under, if it may be frozen at all.
+
+    Two refusals, and they are different failures. An absent record means nobody
+    wrote down what the participant agreed to, and the manifest would carry a
+    blank that reads as "not applicable". A withdrawn one means they did agree
+    and then said stop - freezing them into a held-out set makes the withdrawal
+    undoable in practice, because the held-out set is the thing every reported
+    number is defended with and re-freezing it is the failure §14.4 exists to
+    prevent.
+    """
+    consent = recording.consent
+    if consent is None:
+        raise FreezeError(
+            f"{recording.recording_id!r} declares no consent. `BASELINES.md` §4 requires "
+            "the dataset card to record the consent basis, and a manifest entry with a "
+            "blank one cannot be told from a recording nobody asked about."
+        )
+    if not consent.is_active:
+        raise FreezeError(
+            f"consent for {recording.recording_id!r} was withdrawn on "
+            f"{consent.withdrawn_on}. Freezing it into the held-out set makes the "
+            "withdrawal undoable in practice: every reported number would be defended "
+            "with a manifest naming this recording. Remove the file - the policy's "
+            "deletion flow gives 24 hours - and re-split."
+        )
+    return consent
+
+
+def _freezable_conditions(recording: AnnotatedRecording) -> RecordingConditions:
+    """The capture chain, if it is one a corpus figure can be computed over.
+
+    ``REFERENCE_ENVIRONMENT.md`` states both refusals as requirements and states
+    the harm behind them. They are enforced here rather than in
+    ``RecordingConditions`` because a botched session is a fact that has to be
+    representable in order to be acted on; what must not happen is that it
+    reaches a manifest.
+    """
+    conditions = recording.conditions
+    if conditions is None:
+        raise FreezeError(
+            f"{recording.recording_id!r} declares no recording conditions. "
+            "`REFERENCE_ENVIRONMENT.md` gates Pilot A on four of them, and a chain "
+            "recorded once in a document cannot say which session drifted."
+        )
+    if not conditions.virtual_audio_bypassed:
+        raise FreezeError(
+            f"{recording.recording_id!r} was captured with a virtual audio chain in the "
+            "path. NVIDIA Broadcast suppresses breath, creak and the trailing energy of a "
+            "cut-off word - the acoustic evidence for cut_off, prolongation and "
+            "silent_pause boundaries - and Voicemeeter resamples and mixes. A per-class "
+            "figure over that audio is a figure about the enhancer."
+        )
+    if conditions.channels != 1:
+        raise FreezeError(
+            f"{recording.recording_id!r} was captured on {conditions.channels} channels. "
+            "`REFERENCE_ENVIRONMENT.md` requires mono PCM: both baselines' feature "
+            "extractors take one channel, which one is not recorded anywhere, and a "
+            "corpus scored half on channel 0 and half on a downmix has no single "
+            "signal behind its numbers."
+        )
+    return conditions
 
 
 def verify(manifest: FrozenCorpus, sources: Mapping[str, Path]) -> tuple[Finding, ...]:
@@ -279,18 +416,73 @@ def from_json(text: str) -> FrozenCorpus:
                 FrozenRecording(
                     recording_id=str(item["recording_id"]),
                     speaker_pseudonym=str(item["speaker_pseudonym"]),
+                    speaker_variety=str(item["speaker_variety"]),
                     partition=str(item["partition"]),
                     source_path=str(item["source_path"]),
                     sha256=str(item["sha256"]),
                     duration_ms=int(item["duration_ms"]),
+                    consent=_consent_from(item["consent"]),
+                    conditions=_conditions_from(item["conditions"]),
                     class_counts={str(k): int(v) for k, v in item["class_counts"].items()},
                 )
                 for item in payload["recordings"]
             ),
             digest=str(payload["digest"]),
         )
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, SchemaViolation) as error:
         raise FreezeError(f"the manifest is missing or malformed: {error}") from error
+
+
+def _consent_from(payload: Mapping[str, object]) -> ConsentRecord:
+    """Rebuild the record rather than trusting the file.
+
+    Through the constructor, so a hand-edited manifest gets the same refusals a
+    hand-edited annotation does. Reading these back as plain strings would let a
+    manifest declare a consent basis that is not a published one, and the digest
+    check would happily confirm that nobody had altered it since.
+    """
+    return ConsentRecord(
+        basis=ConsentBasis(str(payload["basis"])),
+        policy_version=SemanticVersion.parse(str(payload["policy_version"])),
+        granted_on=date.fromisoformat(str(payload["granted_on"])),
+        covers_video=_strict_bool(payload["covers_video"], "covers_video"),
+    )
+
+
+def _conditions_from(payload: Mapping[str, object]) -> RecordingConditions:
+    return RecordingConditions(
+        microphone=str(payload["microphone"]),
+        sample_rate_hz=_strict_int(payload["sample_rate_hz"], "sample_rate_hz"),
+        bit_depth=_strict_int(payload["bit_depth"], "bit_depth"),
+        channels=_strict_int(payload["channels"], "channels"),
+        virtual_audio_bypassed=_strict_bool(
+            payload["virtual_audio_bypassed"], "virtual_audio_bypassed"
+        ),
+        room_notes=str(payload["room_notes"]),
+    )
+
+
+def _strict_bool(value: object, name: str) -> bool:
+    """A JSON boolean, and nothing that merely behaves like one.
+
+    ``bool("false")`` is ``True``, and so is ``bool("no")``. A manifest edited
+    by hand into ``"virtual_audio_bypassed": "false"`` would then verify as
+    bypassed, which is the exact reading the field exists to make impossible.
+    """
+    if not isinstance(value, bool):
+        raise FreezeError(f"{name} must be a JSON boolean, got {value!r}")
+    return value
+
+
+def _strict_int(value: object, name: str) -> int:
+    """A JSON integer. ``bool`` is not one, whatever Python thinks.
+
+    ``isinstance(True, int)`` holds, so a manifest reading ``"channels": true``
+    would coerce to 1 and pass the mono check on the strength of a typo.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FreezeError(f"{name} must be a JSON integer, got {value!r}")
+    return value
 
 
 def _canonical(manifest: FrozenCorpus) -> dict[str, object]:
@@ -311,10 +503,31 @@ def _canonical(manifest: FrozenCorpus) -> dict[str, object]:
             {
                 "recording_id": entry.recording_id,
                 "speaker_pseudonym": entry.speaker_pseudonym,
+                "speaker_variety": entry.speaker_variety,
                 "partition": entry.partition,
                 "source_path": entry.source_path,
                 "sha256": entry.sha256,
                 "duration_ms": entry.duration_ms,
+                # No `withdrawn_on`. The freeze refuses a withdrawn recording, so
+                # the key would be null in every row ever written, and a field
+                # that is always null tells a reader that withdrawal is tracked
+                # here. It is not: a withdrawal after the freeze is enacted by
+                # deleting the file, and `verify` then reports the held-out set
+                # as changed - which it is.
+                "consent": {
+                    "basis": entry.consent.basis.value,
+                    "policy_version": str(entry.consent.policy_version),
+                    "granted_on": entry.consent.granted_on.isoformat(),
+                    "covers_video": entry.consent.covers_video,
+                },
+                "conditions": {
+                    "microphone": entry.conditions.microphone,
+                    "sample_rate_hz": entry.conditions.sample_rate_hz,
+                    "bit_depth": entry.conditions.bit_depth,
+                    "channels": entry.conditions.channels,
+                    "virtual_audio_bypassed": entry.conditions.virtual_audio_bypassed,
+                    "room_notes": entry.conditions.room_notes,
+                },
                 "class_counts": dict(sorted(entry.class_counts.items())),
             }
             for entry in manifest.recordings

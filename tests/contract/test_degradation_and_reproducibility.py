@@ -48,7 +48,15 @@ from evidence_engine.domain.shared.timeline import Interval
 
 pytestmark = pytest.mark.contract
 
-SILENCE = b"\x00\x00" * 2_560
+#: One second of 16 kHz mono PCM16, sized from the declaration rather than
+#: guessed at. This was 2 560 frames - 160 ms - declared as 1 000 ms, and
+#: nothing compared the two until `AudioWindow` began refusing a declaration
+#: its payload contradicts. Derived here so the next person who changes the
+#: window length changes one number.
+WINDOW_MS = 1_000
+SAMPLE_RATE_HZ = 16_000
+FRAMES_PER_WINDOW = SAMPLE_RATE_HZ * WINDOW_MS // 1_000
+SILENCE = b"\x00\x00" * FRAMES_PER_WINDOW
 
 
 def _coordinator(

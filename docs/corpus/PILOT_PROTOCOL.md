@@ -157,6 +157,56 @@ two trained annotators agree to 40 ms, a model claiming 250 has slack to
 justify. If they disagree by 300, the target needs revisiting before anything
 is trained.
 
+#### The 250 ms is this project's own invention, and the literature is not encouraging
+
+Worth stating plainly before two people are trained on it, because the honest
+answer changes what they are asked to do.
+
+**No disfluency annotation standard has a temporal dimension.** The Switchboard
+disfluency stylebook — the canonical scheme — marks *spans of words*, never
+points in time. The only Spanish disfluency corpus that confronted the question
+(Rodríguez, Torres & Varona, DiSS'01) explicitly declined to assign duration to
+pauses, filled pauses and lengthenings, and left alignment to the algorithms.
+FluencyBank's time-aligned annotations were subsequently found unreliable and
+discarded. A 250 ms boundary criterion is therefore not inherited from anywhere;
+it is this project's addition.
+
+**And the strictly easier task already scores badly.** Apple's SEP-28k measured
+at least three trained annotators on *binary present/absent labels over pre-cut
+three-second clips* — no timing component at all. Verbatim from §2.3 of the
+paper:
+
+> We measured Fleiss Kappa inter-annotator agreement and found word repetitions,
+> interjections, sound repetitions, and no dysfluencies were more consistent
+> (0.62, 0.57, 0.40, 0.39) and blocks and prolongations had only fair or slight
+> agreement (0.25, 0.11).
+
+Prolongation at **κ = 0.11** on a task with no clock in it. Asking two
+annotators to place its onset and offset within 250 ms is asking for something
+harder than the task that produced that number.
+
+#### What the pilot does about it
+
+- **Tight temporal agreement is scoped, not uniform.** Boundary error is
+  reported per class, and the 250 ms review threshold is meaningful for the
+  classes with a sharp acoustic edge — `cut_off`, `filled_pause`, `repetition`,
+  `false_start`. `corpus agreement --boundary-review-ms` exists precisely so the
+  threshold is an argument rather than a constant.
+- **`prolongation` and `silent_pause` are reported presence-first.** A
+  prolongation has no edge to agree on: it is a gradual lengthening, and the
+  question "when did it start" has no answer the speaker's articulation
+  supplies. Report specific agreement on detection, and boundary error at a
+  wider window, stated.
+- **Nothing here is decided in advance of the data.** Pilot B measures the
+  ceiling per class. If `prolongation` comes back near the literature's 0.11,
+  that is the finding, and NFR-004 gets scoped to the classes that support it
+  rather than quietly averaged into a single number that survives review by
+  being vague.
+
+**Report the low coefficients.** A thesis that reports prolongation agreement
+honestly and narrows its claims accordingly survives examination; one that
+reports a single pooled κ, or none, does not.
+
 ### 3. Did they give it the same label?
 
 Cohen's kappa and nominal Krippendorff's alpha over matched events only, the

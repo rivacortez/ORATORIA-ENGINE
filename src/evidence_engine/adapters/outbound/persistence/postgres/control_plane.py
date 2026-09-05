@@ -23,6 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from evidence_engine.adapters.outbound.persistence.identity import hash_secret
 from evidence_engine.adapters.outbound.persistence.postgres import models
 from evidence_engine.adapters.outbound.persistence.postgres.engine import unit_of_work
+from evidence_engine.adapters.outbound.persistence.postgres.mapping import (
+    seed_from_columns,
+    seed_to_columns,
+)
 from evidence_engine.application.ports.platform import (
     ApprovalState,
     AuthenticatedCaller,
@@ -155,6 +159,7 @@ class PostgresConfigurationStore:
         async with unit_of_work(self._factory) as db:
             existing = await db.get(models.ConfigurationSnapshotRow, snapshot.id.value)
             payload = _snapshot_to_json(snapshot)
+            seed, seed_reason = seed_to_columns(snapshot.seed)
             if existing is None:
                 db.add(
                     models.ConfigurationSnapshotRow(
@@ -163,9 +168,20 @@ class PostgresConfigurationStore:
                         pipeline_version=str(snapshot.pipeline_version),
                         schema_version=str(snapshot.schema_version),
                         payload=payload,
+                        seed=seed,
+                        seed_reason=seed_reason,
                     )
                 )
-            elif existing.payload != payload:
+            # The seed is compared alongside the payload rather than left out
+            # of the immutability check. It lives in its own columns, so a
+            # payload comparison on its own would let one published id mean two
+            # different reproduction claims - which is the exact thing US-008
+            # forbids, and the harder half of it to notice.
+            elif (existing.payload, existing.seed, existing.seed_reason) != (
+                payload,
+                seed,
+                seed_reason,
+            ):
                 raise ControlPlaneError(
                     f"configuration {snapshot.id} is already published with different "
                     "content; published versions are immutable (US-008)"
@@ -321,6 +337,7 @@ def _row_to_snapshot(row: models.ConfigurationSnapshotRow) -> ConfigurationSnaps
         fusion_window=FusionWindow(
             width_ms=int(payload["fusion_window_ms"]), configuration=snapshot_id
         ),
+        seed=seed_from_columns(row.seed, row.seed_reason),
         speech_thresholds=dict(payload.get("speech_thresholds", {})),
         visual_thresholds=dict(payload.get("visual_thresholds", {})),
         silence_threshold_ms=int(payload.get("silence_threshold_ms", 700)),

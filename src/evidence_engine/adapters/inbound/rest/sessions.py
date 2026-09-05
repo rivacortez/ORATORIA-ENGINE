@@ -24,6 +24,7 @@ from evidence_engine.adapters.inbound.rest.schemas import (
     CreatedSessionBody,
     CreateSessionBody,
     DeletionReceiptBody,
+    DeletionVerificationBody,
     NegotiatedCapabilitiesBody,
     SessionStatusBody,
 )
@@ -139,6 +140,42 @@ async def delete_evidence(
         media_objects_deleted=receipt.media_objects_deleted,
         evidence_records_deleted=receipt.evidence_records_deleted,
         already_deleted=receipt.was_already_deleted,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/evidence/verification",
+    response_model=DeletionVerificationBody,
+    summary="Check what, if anything, survived a deletion",
+)
+async def verify_deletion(
+    engine: EngineDep, caller: CallerDep, session_id: SessionIdPath
+) -> DeletionVerificationBody:
+    """The read-only counterpart to ``DELETE .../evidence`` (QA-04).
+
+    A separate route, not a field on the deletion response. The consent policy
+    makes verification a call that does not share a code path with deletion,
+    because a check performed by the code that just deleted reports on its own
+    actions; a route the deletion handler cannot reach is how that separation
+    survives the next person to add a convenience.
+
+    Residue is a 200 carrying ``deletion_verified: false``, not a 409. The
+    status describes what happened to the request, and the request succeeded:
+    it asked a question and got an answer. A 409 would make a monitor read "the
+    verification ran and found surviving evidence" as "the verification failed"
+    - opposite conclusions - and put a client into a retry loop against a
+    finding that retrying cannot change.
+    """
+    verification = await engine.delete_evidence.verify(caller, SessionId(session_id))
+    return DeletionVerificationBody(
+        schema_version=_schema_version(engine),
+        session_id=verification.session_id.value,
+        deletion_verified=verification.is_clean,
+        media_objects_remaining=verification.media_objects_remaining,
+        evidence_document_present=verification.evidence_document_present,
+        stream_state_present=verification.stream_state_present,
+        session_marked_deleted=verification.session_marked_deleted,
+        audit_record_present=verification.audit_record_present,
     )
 
 

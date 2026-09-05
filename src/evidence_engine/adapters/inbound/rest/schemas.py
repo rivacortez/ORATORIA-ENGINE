@@ -129,6 +129,35 @@ class DeletionReceiptBody(Envelope):
     already_deleted: bool
 
 
+class DeletionVerificationBody(Envelope):
+    """``GET /v1/sessions/{id}/evidence/verification``.
+
+    One field per store the deletion writes to, and ``deletion_verified`` is
+    exactly their conjunction - nothing else feeds it. A consumer can therefore
+    recompute the summary from the fields beside it, which is the property that
+    stops the summary attesting to more than was read.
+
+    Published as fields rather than as a bare boolean because the four ways
+    QA-04 fails have four different remedies, and an operator told only
+    ``false`` would go looking in the logs - the one place NFR-018 keeps this
+    content out of.
+
+    ``media_objects_remaining`` and ``evidence_document_present`` say what was
+    counted, not what was concluded. Outstanding signed URLs and evidence
+    bundles behind an unpublished run have no read-only port to ask; see
+    ``application.commands.delete_evidence`` for which of those the object
+    count covers by proxy and which it does not.
+    """
+
+    session_id: str
+    deletion_verified: bool
+    media_objects_remaining: int
+    evidence_document_present: bool
+    stream_state_present: bool
+    session_marked_deleted: bool
+    audit_record_present: bool
+
+
 class CapabilitiesBody(Envelope):
     """``GET /v1/capabilities``."""
 

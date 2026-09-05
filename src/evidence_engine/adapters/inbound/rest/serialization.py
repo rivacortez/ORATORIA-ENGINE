@@ -19,6 +19,7 @@ from typing import Any
 from evidence_engine.domain.evidence.document import EvidenceDocument
 from evidence_engine.domain.quality.assessment import QualityReport
 from evidence_engine.domain.shared.measurement import Indicator, Measured
+from evidence_engine.domain.shared.provenance import Seed, Seeded
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
 from evidence_engine.domain.transcript.transcript import Transcript
@@ -177,7 +178,7 @@ def _render_indicator(indicator: Indicator) -> dict[str, Any]:
 
 
 def _render_provenance(event: SpeechEvent | VisualEvent) -> dict[str, Any]:
-    """NFR-014's six fields, on every derived event."""
+    """NFR-014's six fields, on every derived event, plus NFR-015's seed."""
     provenance = event.provenance
     return {
         "modality": provenance.modality.value,
@@ -185,4 +186,21 @@ def _render_provenance(event: SpeechEvent | VisualEvent) -> dict[str, Any]:
         "taxonomy_version": str(provenance.taxonomy_version),
         "configuration_id": provenance.configuration.value,
         "evidence_ref": provenance.evidence_ref.value,
+        "seed": _render_seed(provenance.seed),
     }
+
+
+def _render_seed(seed: Seed) -> dict[str, Any]:
+    """The seed, or the reason there is none.
+
+    Always present, like ``causal_inference``, so a consumer reads the case
+    rather than inferring it from a key that is not there. The two branches
+    produce disjoint key sets for the reason ``_render_indicator`` does: an
+    unseeded provenance has no ``value`` key at all, because ``seed ?? 0`` is
+    what a consumer writes to make a reproduction script run, and 0 is a seed a
+    run could genuinely have used. The rerun would then complete and report a
+    match against a result produced under something else entirely.
+    """
+    if isinstance(seed, Seeded):
+        return {"recorded": True, "value": seed.value}
+    return {"recorded": False, "reason": seed.reason.value}

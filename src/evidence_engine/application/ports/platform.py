@@ -25,7 +25,7 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import Modality, Seed, SemanticVersion
 from evidence_engine.domain.visual_events.calibration import VisualCalibration
 
 # ---------------------------------------------------------------------------
@@ -129,6 +129,13 @@ class ConfigurationSnapshot:
     object is captured at session creation rather than read per window - a
     threshold changed mid-session would make the first half and the second half
     of one presentation incomparable.
+
+    ``seed`` has no default, unlike every other tuning knob here. "Complete
+    snapshot" is the whole of US-008's promise, and a defaulted seed would let
+    a snapshot that never stated its seed policy be indistinguishable from one
+    that deliberately chose the same value. NFR-015 names the seed alongside
+    the input, the artifact and the configuration; the other three cannot be
+    omitted either.
     """
 
     id: ConfigurationSnapshotId
@@ -136,6 +143,12 @@ class ConfigurationSnapshot:
     pipeline_version: SemanticVersion
     schema_version: SemanticVersion
     fusion_window: FusionWindow
+    #: The seed the run is configured to use, or the reason there is none. Not
+    #: the same claim as ``Provenance.seed``, which is what a runtime actually
+    #: consumed: a deterministic runtime handed a configured seed ignores it,
+    #: and reporting the configured value as provenance would describe a
+    #: reproduction path that was never taken.
+    seed: Seed
     #: Publication threshold per speech class, keyed by the class identifier.
     speech_thresholds: Mapping[str, float] = field(default_factory=dict)
     #: Publication threshold per visual class.

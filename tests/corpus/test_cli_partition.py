@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from corpus.cli.main import main
+from corpus.partition.freeze import MANIFEST_VERSION
 from evidence_engine.domain.shared.taxonomy import SpeechEventType, p0_speech_events
 
 CLASSES = tuple(sorted(p0_speech_events(), key=lambda e: e.value))
@@ -84,8 +85,18 @@ def _eaf(path: Path, *, recording_id: str, speaker: str, events: list[str]) -> P
         <PROPERTY NAME="speaker_pseudonym">{speaker}</PROPERTY>
         <PROPERTY NAME="annotator_id">ana</PROPERTY>
         <PROPERTY NAME="annotation_pass">first</PROPERTY>
-        <PROPERTY NAME="schema_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="schema_version">2.0.0</PROPERTY>
         <PROPERTY NAME="taxonomy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="speaker_variety">es-PE</PROPERTY>
+        <PROPERTY NAME="consent_basis">written_informed</PROPERTY>
+        <PROPERTY NAME="consent_policy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="consent_granted_on">2026-09-01</PROPERTY>
+        <PROPERTY NAME="consent_covers_video">false</PROPERTY>
+        <PROPERTY NAME="microphone">Realtek(R) Audio - onboard array</PROPERTY>
+        <PROPERTY NAME="sample_rate_hz">16000</PROPERTY>
+        <PROPERTY NAME="bit_depth">16</PROPERTY>
+        <PROPERTY NAME="channels">1</PROPERTY>
+        <PROPERTY NAME="virtual_audio_bypassed">true</PROPERTY>
     </HEADER>
     <TIME_ORDER>{"".join(slots)}</TIME_ORDER>
     <TIER LINGUISTIC_TYPE_REF="verbatim" TIER_ID="words">{words}</TIER>
@@ -320,7 +331,10 @@ def test_the_manifest_is_committable_json(tmp_path: Path) -> None:
 
     payload = json.loads(manifest.read_text(encoding="utf-8"))
 
-    assert payload["manifest_version"] == "1.0.0"
+    # Read from the module rather than pinned to a literal: the manifest
+    # gained fields when the schema did, and a test asserting the old
+    # number fails for the version bump rather than for the manifest.
+    assert payload["manifest_version"] == str(MANIFEST_VERSION)
     assert payload["taxonomy_version"] == "1.0.0"
     assert len(payload["digest"]) == 64
     assert {r["partition"] for r in payload["recordings"]} == {"train", "dev", "held_out"}

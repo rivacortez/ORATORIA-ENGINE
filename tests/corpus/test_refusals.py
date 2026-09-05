@@ -24,7 +24,7 @@ from corpus.agreement.report import (
     compare,
 )
 from corpus.cli.main import main
-from corpus.io.elan import ElanError, WouldOverwrite, read, write_template
+from corpus.io.elan import ElanError, WouldOverwrite, read
 from corpus.schema.records import (
     SCHEMA_VERSION,
     AnnotatedRecording,
@@ -34,7 +34,7 @@ from corpus.schema.records import (
 )
 from evidence_engine.domain.shared.provenance import SemanticVersion
 from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION, SpeechEventType
-from tests.corpus.conftest import annotation, recording, word
+from tests.corpus.conftest import TEMPLATE_FLAGS, annotation, recording, template, word
 
 FILLED = SpeechEventType.FILLED_PAUSE
 
@@ -97,7 +97,9 @@ def test_files_under_different_major_schema_versions_are_refused() -> None:
     right = recording(
         "beto",
         [annotation(FILLED, 1_050, 2_050, "beto")],
-        schema_version=SemanticVersion(2, 0, 0),
+        # Not 2.0.0: that is the current version, and a test whose "other"
+        # value drifts into being the real one stops testing anything.
+        schema_version=SemanticVersion(SCHEMA_VERSION.major + 1, 0, 0),
     )
 
     with pytest.raises(IncompatibleVersions, match="schema"):
@@ -185,13 +187,7 @@ def test_an_eaf_without_a_taxonomy_version_is_refused_at_read_time(tmp_path: Pat
     property, rather than a refusal three commands later about two files.
     """
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     path.write_text(
         path.read_text(encoding="utf-8").replace('NAME="taxonomy_version"', 'NAME="unused"'),
         encoding="utf-8",
@@ -205,13 +201,7 @@ def test_an_unparseable_taxonomy_version_is_refused_rather_than_dropped(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     path.write_text(
         path.read_text(encoding="utf-8").replace(
             f'"taxonomy_version">{TAXONOMY_VERSION}<', '"taxonomy_version">v1<'
@@ -337,13 +327,7 @@ def test_every_refusal_shares_one_base_class() -> None:
 
 def test_the_template_records_the_schema_version(tmp_path: Path) -> None:
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
 
     assert f'"schema_version">{SCHEMA_VERSION}<' in path.read_text(encoding="utf-8")
 
@@ -352,13 +336,7 @@ def test_a_file_without_a_schema_version_is_refused(tmp_path: Path) -> None:
     """Defaulting to the current version would be a guess, and the guess would
     surface as an agreement figure rather than as an error."""
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     path.write_text(
         path.read_text(encoding="utf-8").replace('NAME="schema_version"', 'NAME="unused"'),
         encoding="utf-8",
@@ -370,13 +348,7 @@ def test_a_file_without_a_schema_version_is_refused(tmp_path: Path) -> None:
 
 def test_a_file_from_a_future_schema_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     path.write_text(
         path.read_text(encoding="utf-8").replace(
             f'"schema_version">{SCHEMA_VERSION}<', '"schema_version">9.0.0<'
@@ -395,6 +367,12 @@ def test_a_file_from_a_future_schema_is_refused(tmp_path: Path) -> None:
 
 
 def _template_args(path: Path) -> list[str]:
+    """The `corpus template` command line, with the recruitment fields.
+
+    `TEMPLATE_FLAGS` carries the variety, consent record and capture chain the
+    command now requires. They are not optional and should not be: all three are
+    captured at recruitment or they are unreconstructable.
+    """
     return [
         "template",
         str(path),
@@ -406,6 +384,7 @@ def _template_args(path: Path) -> list[str]:
         "ana",
         "--media",
         "pilot-001.wav",
+        *TEMPLATE_FLAGS,
     ]
 
 
@@ -416,13 +395,7 @@ def test_the_template_refuses_to_overwrite(tmp_path: Path) -> None:
     path.write_text("a day of somebody's annotation", encoding="utf-8")
 
     with pytest.raises(WouldOverwrite, match="already exists"):
-        write_template(
-            path,
-            recording_id="pilot-001",
-            speaker_pseudonym="P-001",
-            annotator_id="ana",
-            media_url="pilot-001.wav",
-        )
+        template(path)
 
     assert path.read_text(encoding="utf-8") == "a day of somebody's annotation"
 

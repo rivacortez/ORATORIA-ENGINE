@@ -84,7 +84,7 @@ discipline works.
 | Hub revision (commit sha)                   | `06f233fe06e710322aca913c1bc4249a0d71fce1`                                                             |
 | Artifact pinned                             | `model.safetensors`                                                                                    |
 | Weights digest (sha256)                     | `a8e94b85976e5864ba3e9525c7e6c83b2a1eca42d4b797a0c7c24d778e40fd95`                                     |
-| Artifact size (bytes)                       | `3087130976`                                                                                           |
+| Artifact size (bytes)                       | `3087130976` — **the pinned artifact only.** The unfiltered repository is roughly 31.6 GB: it also carries `flax_model.msgpack` (6.17 GB), `pytorch_model.bin` (3.09 GB) and fp32 shards in both formats. Download with an explicit include list, or pay ten times the bandwidth for files no pin references. |
 | Parameter count                             | 1 543 490 560                                                                                          |
 | Quantisation                                | fp16 as published (`F16` for all parameters)                                                           |
 | Repository last modified                    | 2024-08-12T10:20:10Z                                                                                   |
@@ -140,7 +140,7 @@ with no extra component to pin.
 | Published under `transformers` | 4.57.6 |
 | Repository last modified | 2026-08-13T15:51:53Z |
 | Inference library | `crisperwhisper` **2.0.2** (PyPI) — not `transformers`; the repo declares `library_name: crisperwhisper` |
-| Backend | `ct2` — `pip install "crisperwhisper[ct2]"`, converted once on first load. The `transformers` extra is the fallback if ct2 conversion is unavailable on the pilot host, and which one produced a figure is recorded with it |
+| Backend | **`transformers` on Windows; `ct2` is not available there at all.** `ctranslate2-crisperwhisper` publishes 14 wheels across 4.7.1.post2/post3, every one `manylinux_2_27_x86_64.manylinux_2_28_x86_64`, and **no sdist** - so pip cannot install it on Windows and cannot even attempt a source build. Which backend produced a figure is recorded with the figure. |
 | Entry point | `from crisperwhisper import CrisperWhisperModel` |
 | Decoding: mode | **`mode="verbatim"`** — the default, and the entire reason this model is here. `mode="intended"` is the clean-transcript mode and must never produce a baseline figure |
 | Decoding: language | **forced** to `es` |
@@ -202,6 +202,52 @@ The comparator is the second row. It does not exist yet, it is produced by
 running this exact pin over the human-annotated Peruvian held-out slice, and
 until it does exist NFR-001 has no number to be read against. That is the
 correct state for a target whose corpus has not been recorded.
+
+### Two corrections a review round later
+
+Recorded rather than silently applied, because the pins document's own argument
+is that a pin is only as good as the checking behind it.
+
+**The ct2 backend was described as a fallback situation and is not one.** The
+row above previously said `transformers` was the fallback "if ct2 conversion is
+unavailable on the pilot host", which reads as a performance trade-off. It is
+not: `ctranslate2-crisperwhisper` ships Linux-only wheels and no source
+distribution, so on the Windows annotation workstation the ct2 path does not
+exist. Verify:
+
+```sh
+curl -s "https://pypi.org/pypi/ctranslate2-crisperwhisper/json"   | jq -r '.releases[][] | "\(.packagetype) \(.filename)"' | sort -u
+# every line: bdist_wheel ...manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+```
+
+**2.0's language metadata says the same thing v1's did.** The section below
+argues that v1 could not be the comparator because its card declares
+`language: ['de', 'en']`. Run the same query against 2.0 at the pinned
+revision and it returns **`['en', 'de']`**:
+
+```sh
+curl -sL "https://huggingface.co/api/models/nyralabs/CrisperWhisper2.0_large" | jq .cardData.language
+# ["en","de"]
+```
+
+So the metadata argument does not distinguish the two models, and using it
+against v1 while relying on 2.0's README prose is an inconsistency an examiner
+finds in one query. The honest position is narrower than the original one:
+
+- **What the metadata says**: en, de. For both.
+- **What 2.0's card body adds**: verbatim/intended style control described as
+  working "across most languages", and a ten-language disfluency-F1 leaderboard
+  in which **eight of the ten, Spanish among them, use synthetic verbatim
+  evaluation sets**.
+- **What actually separates them**: 2.0's card claims multilingual coverage and
+  publishes a Spanish figure; v1's card says "CrisperWhisper 1.0 is
+  English/German-only" in its own prose. That sentence, not the metadata field,
+  is the discriminator.
+
+The pin stands. The reasoning behind it is now the reasoning that survives the
+query, and the field itself is recorded as unresolved: a maintainer who leaves
+`language` at `['en','de']` on a model marketed as multilingual has left the
+question open, and this document does not close it on their behalf.
 
 ### The caveat that does not go away
 

@@ -17,14 +17,15 @@ unitizing a condition. See `docs/corpus/PILOT_PROTOCOL.md`.
 from __future__ import annotations
 
 import re
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
 
-from corpus.io.elan import write_template
+from corpus.partition.freeze import FrozenCorpus, FrozenRecording
 from corpus.schema.records import DisfluencyAnnotation, Interval, SchemaViolation
 from evidence_engine.domain.shared.taxonomy import SpeechEventType, VisualEventType
-from tests.corpus.conftest import annotation
+from tests.corpus.conftest import annotation, template
 
 PROTOCOL = Path(__file__).resolve().parents[2] / "docs" / "corpus" / "PILOT_PROTOCOL.md"
 
@@ -52,13 +53,7 @@ def test_the_template_offers_no_visual_class(tmp_path: Path) -> None:
     """An annotator cannot select one, so the pilot cannot silently acquire
     visual annotations that nobody planned to measure."""
     path = tmp_path / "t.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     content = path.read_text(encoding="utf-8")
 
     for event in VisualEventType:
@@ -136,6 +131,9 @@ ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
 TAXONOMY_MODULE = ROOT / "src" / "evidence_engine" / "domain" / "shared" / "taxonomy.py"
 PINS = ROOT / "docs" / "governance" / "BASELINE_PINS.md"
+BASELINES = ROOT / "docs" / "governance" / "BASELINES.md"
+MANUAL = ROOT / "docs" / "taxonomy" / "ANNOTATION_MANUAL.md"
+DATASET_CARD = ROOT / "docs" / "corpus" / "DATASET_CARD_TEMPLATE.md"
 
 
 def test_the_readme_names_which_half_phase_0_5_closes() -> None:
@@ -231,13 +229,18 @@ CLAIM_BEARING = (
     README,
     PROTOCOL,
     TAXONOMY_MODULE,
-    ROOT / "docs" / "governance" / "BASELINES.md",
+    BASELINES,
     PINS,
     # The parent build record. Added here the day it was written rather than
     # the day it first contradicted something: it summarises every other
     # document, so it is the one most likely to carry a claim that was true
     # when it was copied and is not any more.
     ROOT / "docs" / "BUILD_RECORD.md",
+    # The dataset card template, for the same reason. It carries no closure
+    # claim today because every one of its cells is pending; §5 of it is where
+    # the taxonomy version and the agreement figures get written down, which is
+    # where an unqualified claim will first be tempting.
+    DATASET_CARD,
 )
 
 #: Phrasings that assert a closure without naming which half of the taxonomy.
@@ -261,9 +264,31 @@ UNQUALIFIED_CLOSURES = (
 _MENTION = re.compile(r'"[^"\n]*"|`[^`\n]*`')
 
 
+def _unwrapped(text: str) -> str:
+    """The document with its line wrapping collapsed to single spaces."""
+    return re.sub(r"\s+", " ", text)
+
+
 def _assertions_only(text: str) -> str:
-    """The document with its quoted mentions removed."""
-    return _MENTION.sub(" ", text)
+    """The document's assertions: mentions removed, then wrapping collapsed.
+
+    The order is the whole design, and it is not symmetric.
+
+    *Mentions first, on the wrapped text.* `_MENTION` refuses to cross a
+    newline, so a quotation that opens on one line and closes on the next is
+    read as an assertion rather than excused as a quotation. That is the strict
+    reading and the one to keep: a claim does not stop being a claim because a
+    quotation mark opened three words earlier on the previous line.
+
+    *Wrapping second.* A phrase is a phrase wherever the paragraph happened to
+    break. The annotation manual's original claim wrapped as "aplicar esta
+    taxonomia de forma / consistente", and a sweep over raw text walked straight
+    past it - the defect this section exists to catch, surviving inside the
+    check meant to catch it, for as long as the line width was unlucky. Every
+    phrase in the lists above is written unwrapped, so this is what they are
+    matched against.
+    """
+    return _unwrapped(_MENTION.sub(" ", text))
 
 
 @pytest.mark.parametrize("path", CLAIM_BEARING, ids=lambda p: p.name)
@@ -298,7 +323,7 @@ OVERSTATED_FREEZES = (
 )
 
 
-@pytest.mark.parametrize("path", (PINS, ROOT / "docs" / "governance" / "BASELINES.md"))
+@pytest.mark.parametrize("path", (PINS, BASELINES))
 def test_the_governance_documents_do_not_overstate_the_freeze(path: Path) -> None:
     """A pinned weights digest guarantees the same weights, not the same
     numbers: ct2 and transformers do not produce bit-identical output, and
@@ -328,7 +353,7 @@ def test_both_governance_documents_carry_the_same_freeze_cycle() -> None:
         "The baseline outputs over the held-out set",
     )
 
-    for path in (PINS, ROOT / "docs" / "governance" / "BASELINES.md"):
+    for path in (PINS, BASELINES):
         text = path.read_text(encoding="utf-8")
         positions = [text.find(stage) for stage in stages]
         assert all(p >= 0 for p in positions), (
@@ -343,6 +368,274 @@ def test_both_governance_documents_carry_the_same_freeze_cycle() -> None:
 
 def test_the_outputs_are_scheduled_after_the_environment() -> None:
     """Stated in prose too, because the table alone is easy to skim past."""
-    for path in (PINS, ROOT / "docs" / "governance" / "BASELINES.md"):
+    for path in (PINS, BASELINES):
         text = path.read_text(encoding="utf-8")
         assert "after** the environment is frozen" in text, path.name
+
+
+# ---------------------------------------------------------------------------
+# The annotation manual - the document the annotators actually read
+# ---------------------------------------------------------------------------
+#
+# It escaped the sweep above for two rounds. It is generated by
+# `scripts/render_taxonomy.py`, it publishes all nine visual classes in full,
+# and its opening paragraph stated the Phase 0 exit criterion as two annotators
+# applying *this taxonomy* consistently - the exact sentence PILOT_PROTOCOL.md
+# says has to name a modality. Of every document in the repository it is the
+# one whose reader has no other source: an annotator works from the manual and
+# from nothing else.
+#
+# Fixed in the renderer's header rather than in the Markdown. A correction
+# typed into a generated file has the worst possible lifetime for a warning -
+# long enough to be reviewed and approved, gone at the next regeneration.
+
+#: The Spanish half of the sweep. The manual is the one claim-bearing document
+#: not written in English, so `UNQUALIFIED_CLOSURES` would scan it for phrasings
+#: it cannot contain and pass for the wrong reason. Both lists are applied to
+#: it: the English one because the manual could acquire an English sentence,
+#: this one because Spanish is the language its claims are made in.
+#:
+#: Deliberately narrow, on the same principle as the English list. "cierra la
+#: mitad del habla" is a correct statement that has to keep passing, and a list
+#: wide enough to catch it would be a list nobody can satisfy.
+UNQUALIFIED_CLOSURES_ES = (
+    "esta taxonomia de forma consistente",
+    "la taxonomia de forma consistente",
+    "la taxonomia de manera consistente",
+    "la taxonomia esta validada",
+    "la taxonomia fue validada",
+    "cierra la fase 0",
+    "cierre de la fase 0",
+    "cierra la taxonomia",
+)
+
+#: The mention the manual carries inside the sentence that forbids it, in the
+#: exact form the sweep has to see through.
+_MANUAL_MENTION = '"la taxonomia esta validada"'
+
+
+def _unwrapped(text: str) -> str:
+    """The document with its line wrapping collapsed.
+
+    The manual is generated, so where its sentences break is a property of the
+    renderer's column width rather than of what it says. Asserting against the
+    wrapped form would make a reflow look like a retraction.
+
+    Not used by the sweep below, which reads the raw text on purpose: `_MENTION`
+    refuses to cross a newline, so a quotation split over two lines counts as an
+    assertion. That is the stricter reading and the one to keep - a claim does
+    not stop being a claim because a quotation mark opened three words earlier
+    on the previous line.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
+def test_the_manual_names_which_half_its_exit_criterion_closes() -> None:
+    """The defect, in the form it took: the manual opened by stating Phase 0's
+    exit criterion over the whole taxonomy, on the page an annotator reads
+    before touching either half."""
+    text = _unwrapped(MANUAL.read_text(encoding="utf-8"))
+
+    assert "## Alcance: cual mitad se valida y cual no" in text
+    assert "Solo una de sus dos mitades se somete a validacion en la Fase 0.5." in text
+    assert "clases del habla** sobre una muestra piloto" in text
+
+    # Neither half has actually been measured yet, and a manual that implied the
+    # speech half had been would be the same defect facing the other way.
+    assert "La mitad del habla tampoco esta medida aun." in text
+
+
+def test_the_manual_marks_the_visual_classes_as_unvalidated_where_it_publishes_them() -> None:
+    """The scope section at the top is not enough on its own.
+
+    This manual is read in sections - an annotator looking up
+    `posture_deviation` arrives two hundred lines below the header and sees nine
+    fully specified classes with positive examples, which is what a validated
+    taxonomy looks like. The warning is repeated where the classes are.
+    """
+    text = MANUAL.read_text(encoding="utf-8")
+
+    after_heading = text.split("## Clases visuales", 1)[1]
+    before_first_class = _unwrapped(after_heading.split("### ", 1)[0]).lower()
+
+    assert "publicadas y sin validar" in before_first_class
+
+    # Still published in full. The fix is a qualification, not a deletion: the
+    # engine emits these classes and Phase 5 has to annotate them.
+    for event in VisualEventType:
+        assert f"### `{event.value}`" in after_heading
+
+
+def test_the_manual_claims_no_unqualified_closure() -> None:
+    """The sweep, in the language the manual is written in."""
+    text = _assertions_only(MANUAL.read_text(encoding="utf-8").lower())
+
+    found = [phrase for phrase in UNQUALIFIED_CLOSURES_ES + UNQUALIFIED_CLOSURES if phrase in text]
+    assert not found, f"ANNOTATION_MANUAL.md claims a closure without naming the half: {found}"
+
+
+def test_the_manual_keeps_the_warning_the_sweep_would_be_satisfied_by_deleting() -> None:
+    """The sweep above passes just as well if somebody removes the sentence.
+
+    That is the failure mode `BUILD_RECORD.md` §4.3 records: a check that cannot
+    tell a claim from its prohibition ends up demanding that the prohibition go.
+    So the mention is required to be there, on one line, quoted - which is also
+    what makes the sweep's mention-stripping load-bearing rather than decorative.
+    """
+    lines = MANUAL.read_text(encoding="utf-8").splitlines()
+
+    carrying = [line for line in lines if _MANUAL_MENTION in line]
+    assert carrying, (
+        f"the manual no longer quotes {_MANUAL_MENTION} inside the sentence that "
+        "forbids it; the sweep passes because the warning is gone"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The dataset card
+# ---------------------------------------------------------------------------
+#
+# `BASELINES.md` §4 has required dataset cards since Phase 0.
+# `corpus/partition/__init__.py` quotes that requirement as its reason for
+# existing and `freeze.py` calls the manifest "the machine-readable half of the
+# dataset card §4 asks for" - which left the other half named in three
+# docstrings and written nowhere.
+#
+# The fields below are not expensive to collect and are impossible to recover.
+# Everything the corpus keeps is either the sound itself or a pseudonymous
+# annotation of it; neither remembers which room, under what consent, or why
+# those speakers.
+
+#: What §4 requires of a card, and the section of the template that carries it.
+#: Checked as a mapping rather than a word search so that a template mentioning
+#: "consent basis" in passing cannot satisfy the requirement to have a section
+#: about it. Partition checksums map to §1 because the card's job there is to
+#: cite the manifest and refuse to duplicate it.
+CARD_SECTIONS = {
+    "provenance": "## 2. Provenance",
+    "consent basis": "## 3. Consent basis",
+    "recording conditions": "## 4. Recording conditions",
+    "partition checksums": "## 1. Supplied by the freeze manifest",
+}
+
+#: The requirement itself, quoted from `BASELINES.md` §4. Asserted separately so
+#: that a change to §4 fails here rather than silently outrunning the template.
+CARD_REQUIREMENT = (
+    "dataset cards record provenance, consent basis, recording conditions and partition checksums"
+)
+
+#: Every field of the frozen manifest, from the manifest's own definitions. The
+#: template lists what it does not ask a human to write down; a template that
+#: promised a field the manifest does not carry would send somebody looking for
+#: it in a file that has never held it.
+MANIFEST_FIELDS = frozenset(
+    field.name for record in (FrozenCorpus, FrozenRecording) for field in fields(record)
+)
+
+
+def _table_rows(markdown: str) -> list[list[str]]:
+    """Every pipe-table row, cell by cell, with the underlines dropped."""
+    rows: list[list[str]] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(set(cell) <= {"-", ":"} for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def test_baselines_still_asks_for_the_four_things_the_template_is_built_around() -> None:
+    """The template exists to satisfy one sentence in another document.
+
+    Checked in that direction too: if §4 grows a fifth requirement, this fails
+    and somebody has to decide whether the template covers it, rather than the
+    template quietly describing an older rule.
+    """
+    text = _unwrapped(BASELINES.read_text(encoding="utf-8")).lower()
+
+    assert CARD_REQUIREMENT in text
+
+
+@pytest.mark.parametrize("requirement", sorted(CARD_SECTIONS))
+def test_the_template_has_a_section_for_each_thing_a_card_must_record(requirement: str) -> None:
+    text = DATASET_CARD.read_text(encoding="utf-8")
+
+    assert CARD_SECTIONS[requirement] in text, (
+        f"the dataset card template has no section for {requirement!r}"
+    )
+
+
+def test_the_template_only_claims_manifest_fields_the_manifest_has() -> None:
+    """§1 tells a human which fields not to write down.
+
+    It is the half of the card that is easy to get wrong in the expensive
+    direction: a field listed there is a field nobody records by hand, so
+    naming one the manifest does not carry produces a card with a hole in it
+    and a reader who believes the hole is filled somewhere else.
+    """
+    text = DATASET_CARD.read_text(encoding="utf-8")
+    section = text.split(CARD_SECTIONS["partition checksums"], 1)[1].split("\n---", 1)[0]
+
+    # Digits included on purpose: `sha256` is the field most worth checking and
+    # the one an identifier pattern without them silently skips.
+    claimed = {
+        name for row in _table_rows(section) for name in re.findall(r"`([a-z0-9_]+)`", row[0])
+    }
+    assert claimed, "§1 lists no manifest fields at all"
+
+    invented = sorted(claimed - MANIFEST_FIELDS)
+    assert not invented, (
+        f"the template says the freeze manifest supplies {invented}, and it does not"
+    )
+
+
+def test_every_field_in_the_template_says_why_it_cannot_be_recovered_later() -> None:
+    """The template's whole claim is that each field is cheap now and gone
+    later, and a field with no reason beside it is a field somebody will skip
+    when the session is running late."""
+    rows = _table_rows(DATASET_CARD.read_text(encoding="utf-8"))
+    assert rows, "the dataset card template has no field tables"
+
+    thin = [row for row in rows if len(row) != 3 or not all(row)]
+    assert not thin, (
+        f"{len(thin)} row(s) in the dataset card template are missing a cell; every "
+        f"field carries a value and the reason it is unrecoverable: {thin[:3]}"
+    )
+
+
+def test_no_pending_field_in_the_template_is_left_without_a_blocker() -> None:
+    """`REFERENCE_ENVIRONMENT.md` and `BASELINE_PINS.md` set the register: a
+    value that cannot be filled yet says so and names what is stopping it.
+
+    A bare blank reads as "nothing to say about this", which is the one thing
+    none of these fields means.
+    """
+    rows = _table_rows(DATASET_CARD.read_text(encoding="utf-8"))
+
+    unexplained = [
+        cell for row in rows for cell in row if cell.startswith("_pending") and " — " not in cell
+    ]
+    assert not unexplained, (
+        f"pending cells in the dataset card template name no blocker: {unexplained}"
+    )
+
+
+def test_the_template_is_not_mistaken_for_a_filled_card() -> None:
+    """It carries no data and has to say so where a reader starts.
+
+    The digest check is the specific accident worth refusing: an example
+    sha256 in a template gets copied into the card that replaces it, and a
+    plausible sixty-four-character string is the last thing anybody re-derives.
+    """
+    text = DATASET_CARD.read_text(encoding="utf-8")
+
+    assert "**Status:** template only." in text
+    assert "no recording session has happened" in text
+
+    invented_digest = re.search(r"\b[0-9a-f]{64}\b", text)
+    assert invented_digest is None, (
+        f"the template carries what looks like a real digest: {invented_digest}"
+    )

@@ -110,7 +110,12 @@ from evidence_engine.domain.evidence.cooccurrence import (
     FusionWindow,
 )
 from evidence_engine.domain.shared.identifiers import ConfigurationSnapshotId, ModelVersionId
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    SemanticVersion,
+    Unseeded,
+    UnseededReason,
+)
 from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
 
 #: The published contract version this build speaks. Bumped by hand, because
@@ -186,6 +191,14 @@ def default_configuration() -> ConfigurationSnapshot:
     threshold maps say so honestly: with no fitted curve, ``Confidence.meets``
     refuses every gate, so nothing is published as confirmed on the strength of
     a number nobody measured.
+
+    The seed says ``DETERMINISTIC_RUNTIME`` because that is checkable today:
+    both shipped runtimes replay a script, so the same session replayed twice
+    produces byte-identical evidence and there is nothing to seed. The moment
+    a runtime that makes a random choice is wired in, this line becomes false
+    and has to change with it - which is the point of stating the claim here
+    rather than leaving the field empty and letting a reader assume either
+    answer.
     """
     snapshot_id = ConfigurationSnapshotId("config-default-v1")
     return ConfigurationSnapshot(
@@ -194,6 +207,7 @@ def default_configuration() -> ConfigurationSnapshot:
         pipeline_version=PIPELINE_VERSION,
         schema_version=SCHEMA_VERSION,
         fusion_window=FusionWindow(width_ms=DEFAULT_FUSION_WINDOW_MS, configuration=snapshot_id),
+        seed=Unseeded(UnseededReason.DETERMINISTIC_RUNTIME),
         speech_thresholds={},
         visual_thresholds={},
         silence_threshold_ms=700,

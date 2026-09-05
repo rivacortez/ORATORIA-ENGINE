@@ -13,6 +13,13 @@ people never produce `prolongation` at all - and agreement measured on one
 speaker is agreement about that speaker"* - and the same is true of a
 per-class F1. So adequacy is a pair: enough instances, spread over enough
 speakers, and a class failing either test fails.
+
+**The dialect axis is counted here too, and for the same reason.** §14.2 asks
+for error analysis by dialect, which is a stratification question with exactly
+the shape of the one above: a corpus of forty speakers of whom thirty-nine are
+``es-PE`` and one is ``es-MX`` cannot be sliced by dialect, and the only moment
+that fact is actionable is while there is still time to recruit. A field that
+exists and is never counted is a field nobody finds out is empty.
 """
 
 from __future__ import annotations
@@ -37,6 +44,12 @@ DEFAULT_MINIMUM_INSTANCES = 30
 #: literature behind it and the report says so by printing it.
 DEFAULT_MINIMUM_SPEAKERS = 5
 
+#: The bucket for speakers nobody recorded a variety for. Parenthesised so it
+#: cannot collide with a real one: ``Speaker`` rejects anything that is not a
+#: language tag, and a language tag cannot contain brackets - so this label is
+#: unforgeable rather than merely unlikely.
+UNRECORDED_VARIETY = "(unrecorded)"
+
 
 class InventoryError(Exception):
     """The recordings cannot be inventoried as one corpus."""
@@ -52,7 +65,10 @@ class SpeakerProfile:
     """
 
     pseudonym: str
-    variety: str
+    #: ``None`` where no recording of theirs stated one. Reported rather than
+    #: defaulted: a corpus in which nobody stated a variety and one in which
+    #: everybody is Peruvian look identical once the absence is filled in.
+    variety: str | None
     recording_ids: tuple[str, ...]
     duration_ms: int
     class_counts: Mapping[str, int]
@@ -116,6 +132,10 @@ class CorpusInventory:
     #: How many distinct speakers produced each class. The number that stops a
     #: rare class from being one person's habit.
     class_speaker_counts: Mapping[str, int]
+    #: How many distinct speakers were recorded as speaking each variety, with
+    #: ``UNRECORDED_VARIETY`` for those nobody stated one for. The answer to "can
+    #: this corpus be sliced by dialect at all", which §14.2 assumes it can.
+    variety_speaker_counts: Mapping[str, int]
 
     @property
     def speaker_count(self) -> int:
@@ -171,6 +191,7 @@ def inventory(recordings: Sequence[AnnotatedRecording]) -> CorpusInventory:
     than silently summed.
     """
     _require_one_annotation_per_recording(recordings)
+    _require_live_consent(recordings)
 
     by_speaker: dict[str, list[AnnotatedRecording]] = {}
     for recording in recordings:
@@ -180,7 +201,9 @@ def inventory(recordings: Sequence[AnnotatedRecording]) -> CorpusInventory:
 
     class_counts: Counter[str] = Counter()
     class_speakers: dict[str, set[str]] = {}
+    variety_speakers: Counter[str] = Counter()
     for profile in profiles:
+        variety_speakers[profile.variety or UNRECORDED_VARIETY] += 1
         for event_type, count in profile.class_counts.items():
             class_counts[event_type] += count
             class_speakers.setdefault(event_type, set()).add(profile.pseudonym)
@@ -193,7 +216,40 @@ def inventory(recordings: Sequence[AnnotatedRecording]) -> CorpusInventory:
         class_speaker_counts=MappingProxyType(
             {event: len(speakers) for event, speakers in sorted(class_speakers.items())}
         ),
+        variety_speaker_counts=MappingProxyType(dict(sorted(variety_speakers.items()))),
     )
+
+
+def _require_live_consent(recordings: Sequence[AnnotatedRecording]) -> None:
+    """A withdrawn recording is refused here, not quietly dropped.
+
+    Withdrawal is the one consent state where the correct action is to delete
+    the file, and the inventory is the command a recording schedule is driven
+    by: it says "keep going" or "stop" and a methodologist acts on it weekly.
+    Counting a withdrawn participant inflates every figure in that answer - the
+    corpus reads as forty speakers when thirty-nine remain - and *excluding*
+    them silently is worse, because the counts then change between two runs over
+    what looks like the same directory.
+
+    Refused rather than warned for the reason every other refusal in this tree
+    exists: the report renders perfectly either way, and the adequacy verdict is
+    the number somebody stops recording on.
+
+    Note what is *not* refused: a recording with no consent record at all. That
+    is caught at the two boundaries a real recording crosses - the ELAN reader,
+    which will not read a file without the properties, and the freeze, which
+    will not put one in a manifest. Refusing it here as well would break every
+    in-code fixture for no gain, since none of them can reach a manifest.
+    """
+    for recording in recordings:
+        if recording.consent is not None and not recording.consent.is_active:
+            raise InventoryError(
+                f"consent for {recording.recording_id!r} (speaker "
+                f"{recording.speaker.pseudonym!r}) was withdrawn on "
+                f"{recording.consent.withdrawn_on}. It cannot be counted: the adequacy "
+                "verdict is what somebody stops recording on, and this participant's "
+                "data has to be deleted rather than tallied. Remove the file."
+            )
 
 
 def _require_one_annotation_per_recording(
@@ -222,9 +278,14 @@ def _profile(pseudonym: str, group: Iterable[AnnotatedRecording]) -> SpeakerProf
 
     varieties = {r.speaker.variety for r in recordings}
     if len(varieties) > 1:
+        # Labelled before sorting. `variety` is now nullable, and `sorted` over
+        # a set holding both `None` and a string raises TypeError - so the
+        # refusal that exists to name a metadata problem would instead crash
+        # with a message about '<' not being supported.
+        named = sorted(v if v is not None else UNRECORDED_VARIETY for v in varieties)
         raise InventoryError(
             f"speaker {pseudonym!r} is recorded with more than one variety "
-            f"({sorted(varieties)}). Either the pseudonym is reused for two people - "
+            f"({named}). Either the pseudonym is reused for two people - "
             "which breaks the speaker-independence guarantee the partitions rest on - "
             "or one of the recordings has the wrong metadata."
         )
