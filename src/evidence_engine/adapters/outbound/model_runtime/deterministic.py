@@ -102,6 +102,15 @@ class DeterministicSpeechRuntime:
     of this pipeline produced "buenos los este" for exactly that reason.
     """
 
+    #: The whole taxonomy. A scripted runtime emits whatever its script says,
+    #: so its capability is genuinely the full set - and that is the point of
+    #: declaring it per runtime rather than publishing the taxonomy for every
+    #: deployment: the contract suite exercises every class, and the managed
+    #: baseline advertises none, and both statements are true.
+    emitted_speech_events: frozenset[SpeechEventType] = frozenset(SpeechEventType)
+    emitted_prosody: frozenset[ProsodicIndicator] = frozenset(ProsodicIndicator)
+    capability_detail = "a scripted runtime emits whatever its script declares"
+
     def __init__(self, script: SpeechScript) -> None:
         self._script = script
         self._windows_seen = 0
@@ -232,6 +241,9 @@ class VisualScript:
 
 class DeterministicVisionRuntime:
     """Replays a visual script over batches of frames."""
+
+    emitted_visual_events: frozenset[VisualEventType] = frozenset(VisualEventType)
+    capability_detail = "a scripted runtime emits whatever its script declares"
 
     def __init__(self, script: VisualScript) -> None:
         self._script = script

@@ -283,7 +283,22 @@ class SpeechResult:
 
 
 class SpeechRuntime(Protocol):
-    """Verbatim recognition, acoustic detection and prosody over audio."""
+    """Verbatim recognition, acoustic detection and prosody over audio.
+
+    A runtime states what it can produce. `/v1/capabilities` used to publish
+    the whole taxonomy regardless of what was wired, so a deployment running a
+    recogniser and no disfluency detector advertised every disfluency class it
+    could not detect - and a consumer integrating against that would build a
+    view for findings that were never coming.
+    """
+
+    #: Taxonomy classes this runtime can actually emit. Empty is a legitimate
+    #: and common answer: a pure recogniser produces words, not events.
+    emitted_speech_events: frozenset[SpeechEventType]
+    #: Prosodic indicators this runtime can actually measure.
+    emitted_prosody: frozenset[ProsodicIndicator]
+    #: One sentence a consumer can read about why the rest is absent.
+    capability_detail: str
 
     async def transcribe(self, window: AudioWindow) -> SpeechResult:
         """Produce hypotheses for one window.
@@ -350,6 +365,11 @@ class VisualResult:
 
 class VisionRuntime(Protocol):
     """Observable visual estimation over sampled frames or client geometry."""
+
+    #: Visual classes this runtime can actually emit.
+    emitted_visual_events: frozenset[VisualEventType]
+    #: One sentence a consumer can read about why the rest is absent.
+    capability_detail: str
 
     async def observe(self, frames: Sequence[VisualFrame]) -> VisualResult:
         """Produce hypotheses and quality signals for a batch of frames.

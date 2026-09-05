@@ -2,7 +2,7 @@
 # Run the engine locally and open the documented API.
 #
 #   ./scripts/serve.sh                 # memory backend, deterministic runtimes
-#   ./scripts/serve.sh --managed       # the pinned Whisper checkpoint
+#   ./scripts/serve.sh --baseline      # the pinned Whisper research baseline
 #   ./scripts/serve.sh --reload        # restart on edit - see the warning below
 #
 # Then:
@@ -40,8 +40,8 @@ MODE=deterministic
 RELOAD=no
 for argument in "$@"; do
   case "$argument" in
-    --managed)
-      MODE=managed
+    --baseline)
+      MODE=baseline_whisper
       ;;
     --reload)
       RELOAD=yes
@@ -57,9 +57,11 @@ export ENGINE_RUNTIME_MODE="$MODE"
 echo
 echo "  backend       memory (nothing persists; restart is a clean slate)"
 echo "  runtimes      $MODE"
-if [ "$MODE" = "managed" ]; then
-  echo "                the pinned Whisper checkpoint - first start loads ~3 GB"
-  echo "                and its executable environment is NOT pinned (Phase 3)"
+if [ "$MODE" = "baseline_whisper" ]; then
+  echo "                the pinned Whisper checkpoint - first start loads ~3 GB."
+  echo "                It is the frozen RESEARCH BASELINE, not the project"
+  echo "                model: it detects no disfluency and measures no"
+  echo "                prosody, and its environment is NOT pinned (Phase 3)."
 fi
 echo
 echo "  Swagger       http://127.0.0.1:8000/v1/docs"

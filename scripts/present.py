@@ -15,10 +15,10 @@ bottom rather than leaving it to be remembered.
 
 **What it will not find.** Filled pauses, false starts, repetitions,
 prolongations. The disfluency detector does not exist - Phase 4 - so the engine
-reports zero of them, and zero is the honest answer rather than a failure. What
-it *does* find, today, is every word with its boundary and every silence over
-the versioned threshold, which is the part of the taxonomy that is derived
-rather than detected.
+reports them as unavailable with a reason rather than as zero, which would mean
+a detector ran and found none. What it *does* find, today, is every word with
+its boundary and every silence over the versioned threshold, which is the part
+of the taxonomy that is derived rather than detected.
 """
 
 from __future__ import annotations
@@ -355,6 +355,14 @@ async def run(path: Path, as_json: bool) -> int:
     print("WHAT THE ENGINE DERIVED")
     print("=" * 72)
     print(f"  words                {len(tokens)}")
+    unaligned = sum(1 for token in tokens if not token.is_timed)
+    if unaligned:
+        print(
+            f"  of those, unplaced   {unaligned}  - heard, and the alignment heads\n"
+            "                       returned no interval. They are in the transcript\n"
+            "                       above; the pause and rate figures below were\n"
+            "                       computed without them."
+        )
     print(f"  recording length     {audio.duration_ms / 1000:.1f} s")
     print(f"  time inside a word   {speaking_ms / 1000:.1f} s")
     print(f"  time in a long pause {silent_ms / 1000:.1f} s")
@@ -371,13 +379,23 @@ async def run(path: Path, as_json: bool) -> int:
     print("WHAT IT DID NOT MEASURE, AND WHY")
     print("=" * 72)
     print(
-        "  disfluency events    0  - the detector is Phase 4 and does not exist.\n"
-        "                          Zero is the honest answer, not a finding.\n"
-        "  prosody              0  - same, Phase 4.\n"
-        "  visual events        0  - Phase 5; nothing here looks at video.\n"
-        "\n  Silent pauses are the exception: they are *derived* from the gaps\n"
-        "  between words using the versioned threshold, not detected by a model,\n"
-        "  which is why they are the one taxonomy class that works today."
+        "  disfluency events    unavailable  (detector_not_deployed)\n"
+        "                       Phase 4. Nothing here looks for a filled pause,\n"
+        "                       a repetition, a false start or a prolongation.\n"
+        "  prosody              unavailable  (detector_not_deployed)\n"
+        "                       Phase 4. No pitch, intensity or rate estimator.\n"
+        "  visual events        unavailable  (detector_not_deployed)\n"
+        "                       Phase 5. Nothing here looks at video at all.\n"
+        "\n  These used to print `0`, with the explanation beside them. That was\n"
+        "  wrong in the specific way FR-025 exists to prevent: `0` means the\n"
+        "  detector ran and found none, and a reader scanning a column of\n"
+        "  numbers reads the number, not the sentence next to it. A clean\n"
+        "  delivery and an unmeasured one are not the same result.\n"
+        "\n  Silent pauses are the exception, and the reason is worth stating:\n"
+        "  they are *derived* from the gaps between word boundaries using the\n"
+        "  versioned threshold, not detected by a model. That is why they are\n"
+        "  the one taxonomy class that produces a number today - and why their\n"
+        "  count above is a measurement rather than an absence."
     )
 
     print(f"\n{'=' * 72}")

@@ -65,10 +65,15 @@ derives from the gaps between them using the versioned 700 ms threshold. Silent
 pause is the one taxonomy class that is *derived* rather than detected, which
 is why it is the one that works today.
 
-It reports **zero** filled pauses, false starts, repetitions, prolongations and
-self-repairs — because the detector is Phase 4 and does not exist. Zero is the
-honest answer, not a failure, and the report says so rather than leaving a
-reader to assume a clean delivery.
+It reports filled pauses, false starts, repetitions, prolongations and
+self-repairs as **unavailable**, with the reason `detector_not_deployed` —
+because the detector is Phase 4 and does not exist.
+
+It used to print `0` for them and explain in the next sentence why. That was
+wrong in the exact way FR-025 exists to prevent: `0` means the detector ran and
+found none, and a reader scanning a column of numbers reads the number rather
+than the prose beside it. A clean delivery and an unmeasured one must not
+render the same.
 
 And nothing it prints is a figure. The managed runtime declares
 `environment_is_pinned = False`: the backend, container digest and Torch/CUDA

@@ -27,6 +27,7 @@ from evidence_engine.adapters.inbound.rest.schemas import (
     DeletionVerificationBody,
     NegotiatedCapabilitiesBody,
     SessionStatusBody,
+    UnavailableCapabilityBody,
 )
 from evidence_engine.adapters.inbound.rest.serialization import render_document
 from evidence_engine.application.api import EngineApi
@@ -200,6 +201,19 @@ async def read_capabilities(engine: EngineDep, caller: CallerDep) -> Capabilitie
         locales=list(capabilities.locales),
         speech_event_types=list(capabilities.speech_event_types),
         visual_event_types=list(capabilities.visual_event_types),
+        emitted_speech_event_types=list(capabilities.emitted_speech_event_types),
+        emitted_visual_event_types=list(capabilities.emitted_visual_event_types),
+        emitted_prosodic_indicators=list(capabilities.emitted_prosodic_indicators),
+        unavailable_capabilities=[
+            UnavailableCapabilityBody(
+                schema_version=str(capabilities.schema_version),
+                kind=absent.kind,
+                name=absent.name,
+                reason=absent.reason.value,
+                detail=absent.detail,
+            )
+            for absent in capabilities.unavailable_capabilities
+        ],
     )
 
 

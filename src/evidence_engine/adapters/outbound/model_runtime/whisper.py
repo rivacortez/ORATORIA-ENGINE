@@ -41,6 +41,7 @@ from evidence_engine.application.ports.runtimes import (
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.taxonomy import ProsodicIndicator, SpeechEventType
 
 #: The artifact `BASELINE_PINS.md` pins, by identifier and revision. Hard-coded
 #: rather than configurable: a runtime whose checkpoint is a deployment setting
@@ -94,6 +95,21 @@ class WhisperSpeechRuntime:
     #: in Phase 3, and until then any figure this runtime produces is
     #: reproducible only by whoever ran it.
     environment_is_pinned = False
+
+    #: Empty, and that is the honest answer rather than an oversight. Whisper
+    #: is a recogniser: it produces words with boundaries. The disfluency
+    #: detector is Phase 4 and the prosody estimator is Phase 4, so a
+    #: deployment running this runtime can detect none of the nine taxonomy
+    #: classes and measure none of the five prosodic indicators. Publishing
+    #: them as capabilities would tell a consumer to build a view for findings
+    #: that are never coming.
+    emitted_speech_events: frozenset[SpeechEventType] = frozenset()
+    emitted_prosody: frozenset[ProsodicIndicator] = frozenset()
+    capability_detail = (
+        "whisper-large-v3 is the frozen research baseline and is a recogniser: "
+        "it produces verbatim words with boundaries. Disfluency detection and "
+        "prosody are Phase 4 and are not deployed."
+    )
 
     def __init__(self, pipeline: Any, model_version: ModelVersionId) -> None:
         self._pipeline = pipeline

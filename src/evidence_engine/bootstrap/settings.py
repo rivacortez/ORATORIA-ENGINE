@@ -34,19 +34,36 @@ class Backend(StrEnum):
 class RuntimeMode(StrEnum):
     """Which model runtimes to wire.
 
+    The names matter, and the previous ones did damage. ``MANAGED`` loaded
+    Whisper, and ADR-003 had written down that exact failure in advance: keep
+    Whisper a frozen research baseline, *"never as an undocumented production
+    dependency - §11.1 names that constraint explicitly, and a baseline adapter
+    that stays wired 'temporarily' is exactly how it gets violated"*. Nothing
+    in the word "managed" says "baseline", so a deployment reading the setting
+    would reasonably conclude it was running the project's model. It was
+    running the comparator the project is meant to beat.
+
     ``DETERMINISTIC`` replays scripts and produces byte-identical evidence for
     identical input, which is what QA-05's reproducibility check is built on.
 
-    ``MANAGED`` loads the pinned Whisper checkpoint and hears real audio. It
-    needs the ``managed`` extra, it needs the weights downloaded, and its
-    executable environment is **not** pinned - `BASELINE_PINS.md` freezes that
-    in Phase 3. So a figure produced in this mode is reproducible only by
-    whoever ran it, and the runtime says so through
-    ``environment_is_pinned``.
+    ``BASELINE_WHISPER`` loads the pinned Whisper checkpoint and hears real
+    audio. It is a **research baseline**, named as one. It needs the ``managed``
+    extra and the weights downloaded, its executable environment is *not*
+    pinned - `BASELINE_PINS.md` freezes that in Phase 3 - and it detects no
+    disfluency and measures no prosody, which `/v1/capabilities` reports.
+
+    ``PROJECT_MODEL_LOCAL`` and ``PROJECT_MODEL_REMOTE`` are the streaming
+    transducer ADR-003 targets, in-process and behind an inference service.
+    Neither exists. They are named here rather than added later because a
+    deployment asking for the project model must fail with a sentence saying it
+    is not built, not silently receive the baseline - which is what a two-mode
+    enum forced.
     """
 
     DETERMINISTIC = "deterministic"
-    MANAGED = "managed"
+    BASELINE_WHISPER = "baseline_whisper"
+    PROJECT_MODEL_LOCAL = "project_model_local"
+    PROJECT_MODEL_REMOTE = "project_model_remote"
 
 
 class Settings(BaseSettings):

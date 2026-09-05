@@ -378,6 +378,15 @@ class DeletionVerificationBody(Envelope):
     audit_record_present: bool
 
 
+class UnavailableCapabilityBody(Envelope):
+    """One taxonomy class this deployment cannot emit, and why."""
+
+    kind: str
+    name: str
+    reason: str
+    detail: str
+
+
 class CapabilitiesBody(Envelope):
     """``GET /v1/capabilities``."""
 
@@ -387,8 +396,26 @@ class CapabilitiesBody(Envelope):
     video_formats: list[str]
     frame_rate_range_fps: tuple[int, int]
     locales: list[str]
+
+    #: The taxonomy catalogue: every class the published contract defines.
+    #: Read this to know what the schema can carry - not what will arrive.
     speech_event_types: list[str]
     visual_event_types: list[str]
+
+    #: **What the wired runtimes can actually produce.** Build against these.
+    #: The catalogue above used to stand in for them, so a deployment running a
+    #: recogniser and no detector advertised nine disfluency classes it could
+    #: not detect, and a consumer would have built a view for findings that
+    #: were never coming.
+    emitted_speech_event_types: list[str] = []
+    emitted_visual_event_types: list[str] = []
+    emitted_prosodic_indicators: list[str] = []
+
+    #: What the contract defines and this deployment cannot produce, each with
+    #: a reason. An empty `emitted` list plus this is the difference between
+    #: "no findings" and "no detector".
+    unavailable_capabilities: list[UnavailableCapabilityBody] = []
+
     #: §17's contract invariant, published. A consumer reading `"none"` knows
     #: no ranking will ever appear here and builds its own.
     ranking_authority: str = EvidenceDocument.ranking_authority

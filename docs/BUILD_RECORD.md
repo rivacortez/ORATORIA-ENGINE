@@ -320,6 +320,43 @@ that goes stale. Generating it removes the second place; the test removes the
 possibility of somebody replacing it with a literal that reads identically now
 and lies after the next codec change.
 
+### 3.14 A word with no timestamp keeps its place in the sentence
+
+**Decision.** `WordToken` carries a `TokenSequence` that is always present and
+a `placement` that is `Timed | AlignmentUnavailable`. The transcript has two
+frontiers: lexical, which finalizes; temporal, which governs everything that
+reads the clock.
+
+**Why not `start_ms: int | None`.** It admits "start known, end unknown" - a
+state no aligner produces and every consumer would have to handle.
+
+**Why the word survives at all.** Refusing to invent the boundary was right;
+deleting the word was not. What is unknown is *where* it was, not whether it
+was said, and the deletion was undetectable: the transcript rendered, one word
+shorter, and nothing disagreed.
+
+**Why an unplaced word is never finalized by its neighbour.** That was the
+first design and the reviewer rejected it. Finalizing a word because the word
+next to it is settled asserts that this word will not be revised, on evidence
+about a different word. The coordinator states a sequence frontier instead,
+because it is the thing that knows how much audio it committed.
+
+**What it cost.** The port, the domain, the assembler, the id derivation, both
+wire formats, the persistence schema and a migration. That is the honest price
+of the invariant, and the alternative was a verbatim record that was not
+verbatim.
+
+### 3.15 `/v1/capabilities` publishes three lists, not one
+
+**Decision.** The taxonomy catalogue, what the wired runtimes actually emit,
+and what the contract defines and this build cannot produce - the last with
+`detector_not_deployed` and a reason.
+
+**Why.** One list answered both questions and therefore neither. An empty
+emitted list beside a populated unavailable list is the difference between "the
+speaker had no disfluencies" and "nothing here looks for disfluencies", and
+those rendered identically before.
+
 ---
 
 ## 4. Mistakes, and what they cost
@@ -471,6 +508,51 @@ written.
 
 **Rule.** Write the usage first and add the import last, or check the file after
 the hook has run. The tool is not wrong; the ordering was.
+
+---
+
+### 4.11 Every semantic defect lived where no test looked
+
+Six findings from an adversarial review, all confirmed. The unifying cause is
+one line of output:
+
+    rg -l "WhisperSpeechRuntime|whisper" tests/   ->   nothing
+
+Eleven hundred tests, green, against the deterministic runtime - which replays
+a script and is bit-exact by construction. The component that does the actual
+recognition, carrying three `type: ignore`s and two decisions about how to
+represent absence, had **no test at all**. That is why a deleted word and an
+invented 0.5 posterior survived four review rounds.
+
+The other four were the same shape at a distance: `/v1/capabilities` published
+the taxonomy because nothing asserted otherwise; `present.py` printed `0` for
+an absent detector because no test read what a person reads; `RuntimeMode`
+called a research baseline `managed` because the name was never checked against
+ADR-003, which had predicted that exact violation in writing.
+
+**Cost.** A full block of work, and every number this engine had produced was
+suspect until it was done.
+
+**Rule.** A test suite that only covers the deterministic path measures the
+harness. Any adapter that meets a real model gets direct tests with a fake
+boundary, and any artefact a person reads as figures gets swept for substituted
+zeros (`tests/invariants/test_reports_never_substitute_zero.py`).
+
+---
+
+### 4.12 A guard that could not catch its own defect
+
+The sweep written for §4.11 stripped quoted spans before scanning - correct for
+Markdown, where the explanatory paragraph quotes the wording it is warning
+about. Applied to Python it deleted everything: the report text lives inside
+string literals, which is exactly what the strip removes. The test passed
+against the defect it was written for.
+
+**Cost.** Nothing, because the defect was reintroduced to prove the test red
+and the test stayed green. That step is the only reason this was found.
+
+**Rule.** Proving a test red is not ceremony. It is the only thing that
+distinguishes a guard from a comment.
 
 ## 5. What is blocked, and by what
 

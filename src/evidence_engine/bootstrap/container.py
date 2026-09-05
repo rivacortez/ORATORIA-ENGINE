@@ -387,10 +387,22 @@ def build_container(
         ),
         read_session=ReadSession(sessions=sessions),
         read_result=ReadResult(sessions=sessions, evidence=evidence),
-        read_capabilities=ReadCapabilities(SCHEMA_VERSION),
+        # The runtimes are passed so `/v1/capabilities` reports what this
+        # deployment can actually emit rather than the whole taxonomy.
+        read_capabilities=ReadCapabilities(SCHEMA_VERSION, speech=speech, vision=vision),
         administer_keys=AdministerApiKeys(directory=key_admin, audit=audit, clock=resolved_clock),
         closers=closers,
     )
+
+
+#: The two modes ADR-003 names as the destination and that nothing implements.
+_PROJECT_MODEL_MODES = frozenset(
+    {RuntimeMode.PROJECT_MODEL_LOCAL, RuntimeMode.PROJECT_MODEL_REMOTE}
+)
+
+
+class ProjectModelNotBuilt(RuntimeError):
+    """The project model was asked for and does not exist yet."""
 
 
 def _build_runtimes(
@@ -403,8 +415,22 @@ def _build_runtimes(
     speech: SpeechRuntime
     vision: VisionRuntime
 
-    if settings.runtime_mode is RuntimeMode.MANAGED:
-        # Speech only. The managed *vision* runtime is Phase 5 and does not
+    if settings.runtime_mode in _PROJECT_MODEL_MODES:
+        # Refused, not silently substituted. A deployment that asked for the
+        # project model and received the research baseline would publish
+        # figures attributed to a model that does not exist yet, and ADR-010's
+        # promotion trail would be recording a promotion that never happened.
+        raise ProjectModelNotBuilt(
+            f"runtime_mode={settings.runtime_mode.value!r} is the streaming transducer "
+            "ADR-003 targets, and it does not exist: Phase 3 trains it and Phase 1 has "
+            "not frozen the held-out set it is trained against. Use "
+            f"{RuntimeMode.BASELINE_WHISPER.value!r} for the frozen research baseline, "
+            "which is a comparator rather than the project's model, or "
+            f"{RuntimeMode.DETERMINISTIC.value!r} for scripted runtimes."
+        )
+
+    if settings.runtime_mode is RuntimeMode.BASELINE_WHISPER:
+        # Speech only. The baseline *vision* runtime is Phase 5 and does not
         # exist, so this mode pairs a real recogniser with the deterministic
         # vision runtime rather than refusing outright - which is the shape
         # QA-02 already requires of the engine anyway: losing one modality must

@@ -58,6 +58,12 @@ class UnavailabilityReason(StrEnum):
     #: reader at a runtime failure when the runtime succeeded sends them to the
     #: wrong logs.
     ALIGNMENT_UNAVAILABLE = "alignment_unavailable"
+    #: The taxonomy defines this class and no runtime in this deployment can
+    #: produce it - the detector is not built, or not wired. Distinct from
+    #: every other member here: those describe a window that could not be
+    #: measured, this describes a capability that is absent for the whole
+    #: session. A consumer branches differently on the two.
+    DETECTOR_NOT_DEPLOYED = "detector_not_deployed"
     #: The model exposes no per-item posterior. Not low confidence, and not a
     #: failure: the architecture never emitted one. Whisper is the case this
     #: exists for, and the alternative was a placeholder number a consumer
