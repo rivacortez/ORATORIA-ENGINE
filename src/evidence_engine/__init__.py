@@ -46,11 +46,27 @@ from evidence_engine.sdk.configuration import (
 from evidence_engine.sdk.engine import AnalysisResult, OratoriaEngine
 from evidence_engine.sdk.errors import (
     AudioNotUsable,
+    EngineNotWarmed,
     LocalInferenceUnavailable,
     OratoriaError,
     StreamAlreadyClosed,
 )
 from evidence_engine.sdk.preflight import HardwareReport
+from evidence_engine.sdk.results import (
+    AlignmentUnavailable,
+    Confidence,
+    ConfidenceUnavailable,
+    Evidence,
+    Manifest,
+    ProsodyReading,
+    SpeechEvent,
+    TimedPlacement,
+    Transcript,
+    Value,
+    ValueUnavailable,
+    VisualEvent,
+    Word,
+)
 from evidence_engine.sdk.stream import StreamSession
 
 #: The SDK's own version, which is the engine's. Published because a consumer
@@ -62,19 +78,36 @@ __version__ = "0.1.0"
 __all__ = [
     "DEFAULT_SAMPLE_RATE_HZ",
     "DEFAULT_WINDOW_SECONDS",
-    # Results
+    # Absence, in the two shapes it takes. Exported because a consumer has to
+    # narrow on them: a word is placed or it is not, a confidence exists or it
+    # does not, and `isinstance` is how they find out.
+    "AlignmentUnavailable",
     "AnalysisResult",
-    # Errors
     "AudioNotUsable",
+    "Confidence",
+    "ConfidenceUnavailable",
     # Configuration
     "EngineConfiguration",
+    "EngineNotWarmed",
+    # Results, in the SDK's own types
+    "Evidence",
     "HardwareReport",
     "LocalInferenceUnavailable",
+    "Manifest",
     # The facade
     "OratoriaEngine",
+    # Errors
     "OratoriaError",
+    "ProsodyReading",
     "SessionConfiguration",
+    "SpeechEvent",
     "StreamAlreadyClosed",
     "StreamSession",
+    "TimedPlacement",
+    "Transcript",
+    "Value",
+    "ValueUnavailable",
+    "VisualEvent",
+    "Word",
     "__version__",
 ]

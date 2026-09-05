@@ -85,7 +85,6 @@ from evidence_engine.application.workflows.streaming import (
     StreamingCoordinator,
     StreamingState,
 )
-from evidence_engine.domain.evidence.document import EvidenceDocument
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
 from evidence_engine.domain.sessions.capabilities import CapabilityRequest
 from evidence_engine.domain.sessions.consent import RetentionPolicy
@@ -99,8 +98,19 @@ from evidence_engine.domain.shared.identifiers import (
 from evidence_engine.domain.shared.provenance import SemanticVersion
 from evidence_engine.sdk._local import CollectedEvents, SilentTelemetry
 from evidence_engine.sdk.configuration import EngineConfiguration, SessionConfiguration
-from evidence_engine.sdk.errors import AudioNotUsable, LocalInferenceUnavailable
+from evidence_engine.sdk.errors import (
+    AudioNotUsable,
+    EngineNotWarmed,
+    LocalInferenceUnavailable,
+)
 from evidence_engine.sdk.preflight import HardwareReport, hardware_preflight
+from evidence_engine.sdk.results import (
+    Evidence,
+    ProsodyReading,
+    SpeechEvent,
+    Transcript,
+    evidence_from,
+)
 from evidence_engine.sdk.stream import StreamSession
 
 #: The caller an embedded engine runs as.
@@ -128,29 +138,34 @@ def _embedded_caller(trace_id: str) -> AuthenticatedCaller:
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
-    """What one completed analysis produced.
+    """What one completed analysis produced, in the SDK's own types.
 
-    The published contract, not an internal entity: `EvidenceDocument` is what
-    `GET /v1/sessions/{id}/result` serialises, so a consumer reading this
-    locally and a consumer reading the hosted API are reading the same thing.
+    This used to carry an ``EvidenceDocument`` - a domain entity - under a
+    docstring calling it "the published contract, not an internal entity". It
+    was an internal entity, and the surface test passed on the letter while
+    every consumer touching `result.document.transcript.tokens[0].placement`
+    was coupled to the domain's shape. A leak through a field is still a leak.
+
+    ``evidence`` is now the public shape, mirroring the wire rather than the
+    domain, so the day `OratoriaClient` exists it returns these unchanged.
     """
 
-    document: EvidenceDocument
+    evidence: Evidence
     #: How many times the engine asked the caller to slow down. Zero on
     #: `analyze_file`, which paces itself; meaningful on a live stream.
     backpressure_signals: int = 0
 
     @property
-    def transcript(self) -> object:
-        return self.document.transcript
+    def transcript(self) -> Transcript:
+        return self.evidence.transcript
 
     @property
-    def speech_events(self) -> object:
-        return self.document.speech_events
+    def speech_events(self) -> tuple[SpeechEvent, ...]:
+        return self.evidence.speech_events
 
     @property
-    def prosody(self) -> object:
-        return self.document.prosody
+    def prosody(self) -> tuple[ProsodyReading, ...]:
+        return self.evidence.prosody
 
 
 class OratoriaEngine:
@@ -159,11 +174,16 @@ class OratoriaEngine:
     def __init__(
         self,
         configuration: EngineConfiguration,
-        speech: SpeechRuntime,
+        speech: SpeechRuntime | None,
         vision: VisionRuntime,
         clock: Clock | None = None,
     ) -> None:
         self._configuration = configuration
+        #: `None` until `warmup()`. The speech runtime is built lazily because
+        #: building the Whisper one downloads and loads 3 GB of weights, and
+        #: doing that in the constructor made `hardware_preflight()` - the
+        #: method whose entire purpose is to be asked *before* committing to
+        #: that - unreachable until after it had happened.
         self._speech = speech
         self._vision = vision
         self._clock = clock or SystemClock()
@@ -216,15 +236,19 @@ class OratoriaEngine:
     ) -> OratoriaEngine:
         """Build an engine that runs entirely in this process.
 
-        Constructing this does **not** load a model. `hardware_preflight()`
-        reports what the machine has and `warmup()` loads the weights, and
-        keeping construction cheap is what lets a consumer ask both questions
-        before committing to a 3 GB download.
+        Constructing this loads **no** model, and that is now true rather than
+        merely written down: it used to call `build_speech_runtime()` here,
+        which for the Whisper baseline downloads and loads 3 GB before
+        returning - so `hardware_preflight()`, whose entire purpose is to be
+        asked *before* committing to that, could only be reached afterwards.
+        The runtime is built by `warmup()`.
         """
         resolved = configuration or EngineConfiguration()
-        speech = resolved.build_speech_runtime()
+        # No speech runtime yet. A caller supplying their own gets it wired
+        # immediately - there is nothing to defer - but the configured one is
+        # built by `warmup()`, so construction stays free.
         vision = resolved.vision_runtime or DeterministicVisionRuntime(VisualScript())
-        return cls(resolved, speech, vision, clock)
+        return cls(resolved, resolved.speech_runtime, vision, clock)
 
     # -- capability -------------------------------------------------------
 
@@ -242,9 +266,16 @@ class OratoriaEngine:
         rather than a tone because the point is to exercise load, allocation
         and one decode pass - not to assert anything about what came back, which
         would be a measurement this is not entitled to make.
+
+        **Required before analysing anything.** `analyze_file` and
+        `create_stream` refuse until this has run. Loading the model implicitly
+        on first use would put a 3 GB download inside what a caller timed as a
+        transcription, and would make `hardware_preflight()` advisory.
         """
         if self._warmed:
             return
+        if self._speech is None:
+            self._speech = self._configuration.build_speech_runtime()
         try:
             await self._speech.transcribe(_silent_window(self._configuration.sample_rate_hz))
         except Exception as error:
@@ -270,6 +301,7 @@ class OratoriaEngine:
         of by a socket, which is why it produces the same contract rather than
         a parallel one.
         """
+        self._require_warm("analyze_file")
         audio = _read_wav(Path(path), self._configuration.sample_rate_hz)
         async with self.create_stream(session) as stream:
             for offset in range(0, len(audio), self._configuration.window_bytes):
@@ -287,20 +319,39 @@ class OratoriaEngine:
         `pause` is not decoration here, because §6.1's session clock excludes
         paused stretches and a rate computed across one would be wrong.
         """
+        self._require_warm("create_stream")
         return StreamSession(self, session or SessionConfiguration())
 
     # -- lifecycle --------------------------------------------------------
 
     async def aclose(self) -> None:
-        """Release what the engine holds.
+        """Release what the engine holds, including the device.
 
-        In-memory today, so there is nothing to release and this is a no-op.
-        Published anyway: a consumer writing `await engine.aclose()` should not
-        have to change their code when a future adapter holds a file handle or
-        a device context, and adding the call later would be a breaking change
-        to a published surface.
+        This was a no-op with a docstring saying there was nothing to release.
+        That was true of the in-memory adapters and false of the model: a
+        warmed `baseline_whisper` engine holds a CUDA context and about 4.2 GiB
+        of it, so a consumer who closed one and built another on an 8 GB card
+        ran out of memory on a machine that should have fitted both.
+
+        Dropping the reference is not enough on its own - CUDA caches freed
+        blocks in its own allocator, so the memory stays reserved from the
+        driver's point of view until the cache is emptied. Both steps run, in
+        that order, and the torch import is guarded because an engine on the
+        deterministic runtime has no torch to import.
+
+        Idempotent, and safe to call on an engine that was never warmed.
         """
-        return None
+        self._speech = None
+        self._warmed = False
+        _release_device_memory()
+
+    def __del__(self) -> None:  # pragma: no cover - a safety net, not a design
+        # A consumer who forgot `aclose()` should not hold a GPU until the
+        # process exits. This is a net rather than the mechanism: `__del__`
+        # runs at a time nobody controls, so the explicit call remains the
+        # supported way and this only shortens the leak.
+        if getattr(self, "_speech", None) is not None:
+            self._speech = None
 
     async def __aenter__(self) -> OratoriaEngine:
         return self
@@ -318,6 +369,10 @@ class OratoriaEngine:
     async def _open(
         self, session: SessionConfiguration
     ) -> tuple[SessionId, StreamingCoordinator, CollectedEvents, AuthenticatedCaller]:
+        # `_require_warm` has already run in `create_stream`; this states it
+        # for the type checker and would fire loudly rather than building a
+        # coordinator around `None` if that guard were ever removed.
+        assert self._speech is not None
         caller = _embedded_caller(f"sdk_{uuid.uuid4().hex}")
         created = await self._create_session.execute(
             caller,
@@ -368,17 +423,48 @@ class OratoriaEngine:
         )
         await self._close_run.execute(coordinator.state.run_id)
         return AnalysisResult(
-            document=completed.document,
+            evidence=evidence_from(completed.document),
             backpressure_signals=channel.backpressure_signals,
         )
 
     async def _abort(self, coordinator: StreamingCoordinator) -> None:
         await self._close_run.execute(coordinator.state.run_id, succeeded=False)
 
+    def _require_warm(self, doing: str) -> None:
+        """Refuse to work with a model that has not been loaded and proved.
+
+        Loading implicitly on first use would put a 3 GB download inside a call
+        a consumer timed as a transcription, and would leave
+        `hardware_preflight()` - which exists to be asked first - as advice
+        nobody had to take.
+        """
+        if not self._warmed:
+            raise EngineNotWarmed(
+                f"{doing} needs a loaded model. Call `await engine.warmup()` first: it "
+                "loads the weights and decodes a window, and it is the only thing that "
+                "can say the model runs on this machine. `hardware_preflight()` reports "
+                "what the hardware has and deliberately does not answer that."
+            )
+
     @property
     def configuration(self) -> ConfigurationSnapshot:
         """The snapshot every result from this engine is bound to (US-008)."""
         return self._snapshot
+
+
+def _release_device_memory() -> None:
+    """Empty CUDA's cached allocator, if there is one to empty.
+
+    Guarded on the import rather than on a flag: a deterministic engine never
+    imported torch and must not start now, and an engine whose warmup failed
+    part-way may still be holding an allocation.
+    """
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():  # pragma: no cover - needs a device
+        torch.cuda.empty_cache()
 
 
 def _silent_window(sample_rate_hz: int) -> AudioWindow:

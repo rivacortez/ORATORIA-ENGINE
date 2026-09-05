@@ -10,13 +10,14 @@ list matters more than the presence list - a consumer handed
 `InMemoryEvidenceRepository` or `WhisperSpeechRuntime` by an `__init__` would be
 coupled to a composition decision, and the next release would break them.
 
-**Local and hosted produce the same evidence.** The SDK exists to be a second
-way of running one engine, not a second engine. That claim is only true if the
-same audio under the same configuration produces the same document, and it is
-exactly the claim that decays silently: the two paths would keep working while
-drifting, and nothing would say so. The comparison excludes `session_id`,
-`run_id`, trace ids and wall-clock stamps, which differ by construction and say
-nothing about whether the engines agree.
+**The local engine is deterministic.** Same audio, same configuration, same
+clock, same evidence - NFR-015's requirement, and the half of conformance that
+can be checked today. It is deliberately *not* called a conformance test: it
+compares one implementation with itself. Local/remote equivalence needs
+`OratoriaClient`, which does not exist; when it does, `_canonical` is the
+comparison it has to pass, and the exclusions are already right - `session_id`,
+`run_id` and wall stamps differ by construction and say nothing about whether
+two engines agree.
 """
 
 from __future__ import annotations
@@ -28,9 +29,12 @@ import pytest
 
 import evidence_engine
 from evidence_engine import (
+    AlignmentUnavailable,
     AnalysisResult,
     AudioNotUsable,
+    ConfidenceUnavailable,
     EngineConfiguration,
+    EngineNotWarmed,
     HardwareReport,
     OratoriaEngine,
     OratoriaError,
@@ -85,16 +89,38 @@ def a_recording(path: Path, seconds: int = 3) -> Path:
 def test_the_public_exports_are_exactly_these() -> None:
     """Adding a name here is a decision, not a side effect of an import."""
     assert set(evidence_engine.__all__) == {
+        # The facade and what configures it
         "OratoriaEngine",
         "EngineConfiguration",
         "SessionConfiguration",
-        "AnalysisResult",
         "HardwareReport",
         "StreamSession",
+        # The result types. These are the SDK's own, not the domain's: an
+        # `AnalysisResult` carrying an `EvidenceDocument` passed the absence
+        # test below on the letter while coupling every consumer to the
+        # domain's shape through a field.
+        "AnalysisResult",
+        "Evidence",
+        "Manifest",
+        "Transcript",
+        "Word",
+        "SpeechEvent",
+        "VisualEvent",
+        "ProsodyReading",
+        # Absence, in the shapes a consumer has to narrow on
+        "TimedPlacement",
+        "AlignmentUnavailable",
+        "Confidence",
+        "ConfidenceUnavailable",
+        "Value",
+        "ValueUnavailable",
+        # Errors
         "OratoriaError",
         "AudioNotUsable",
+        "EngineNotWarmed",
         "LocalInferenceUnavailable",
         "StreamAlreadyClosed",
+        # Constants and version
         "DEFAULT_SAMPLE_RATE_HZ",
         "DEFAULT_WINDOW_SECONDS",
         "__version__",
@@ -230,11 +256,12 @@ async def test_analyze_file_produces_the_published_contract(tmp_path: Path) -> N
     socket, and returns the document `GET /v1/sessions/{id}/result` serialises.
     """
     engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
     result = await engine.analyze_file(a_recording(tmp_path / "p.wav"))
 
     assert isinstance(result, AnalysisResult)
-    assert result.document.transcript.raw_text() == "buenos dias a todos"
-    assert result.document.ranking_authority == "none"
+    assert result.evidence.transcript.raw_text == "buenos dias a todos"
+    assert result.evidence.ranking_authority == "none"
     await engine.aclose()
 
 
@@ -264,12 +291,14 @@ async def test_a_recording_the_engine_cannot_time_is_refused(
         handle.writeframes(b"\x00" * width * channels * rate)
 
     engine = OratoriaEngine.local(configuration())
+    await engine.warmup()
     with pytest.raises(AudioNotUsable, match=why):
         await engine.analyze_file(path)
 
 
 async def test_a_missing_recording_says_so(tmp_path: Path) -> None:
     engine = OratoriaEngine.local(configuration())
+    await engine.warmup()
     with pytest.raises(AudioNotUsable, match="does not exist"):
         await engine.analyze_file(tmp_path / "absent.wav")
 
@@ -287,6 +316,7 @@ async def test_the_stream_exposes_the_controls_a_presentation_needs() -> None:
     answer a question does not have those minutes counted as silence.
     """
     engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
     stream = engine.create_stream(SessionConfiguration())
 
     assert isinstance(stream, StreamSession)
@@ -296,6 +326,7 @@ async def test_the_stream_exposes_the_controls_a_presentation_needs() -> None:
 
 async def test_a_stream_pauses_resumes_and_finishes() -> None:
     engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
     async with engine.create_stream() as stream:
         assert await stream.send_audio(b"\x00\x00" * 16_000)
         await stream.pause()
@@ -303,7 +334,7 @@ async def test_a_stream_pauses_resumes_and_finishes() -> None:
         assert await stream.send_audio(b"\x00\x00" * 16_000)
         result = await stream.finish()
 
-    assert result.document.transcript.raw_text().startswith("buenos")
+    assert result.evidence.transcript.raw_text.startswith("buenos")
 
 
 async def test_a_finished_stream_refuses_to_be_reused() -> None:
@@ -313,6 +344,7 @@ async def test_a_finished_stream_refuses_to_be_reused() -> None:
     start a different one, and both are worse than refusing.
     """
     engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
     stream = engine.create_stream()
     await stream.send_audio(b"\x00\x00" * 16_000)
     await stream.finish()
@@ -328,6 +360,7 @@ async def test_leaving_the_block_without_finishing_aborts() -> None:
     trail as a completed one.
     """
     engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
     with pytest.raises(RuntimeError, match="deliberate"):
         async with engine.create_stream() as stream:
             await stream.send_audio(b"\x00\x00" * 16_000)
@@ -339,6 +372,7 @@ async def test_leaving_the_block_without_finishing_aborts() -> None:
 async def test_abort_is_idempotent() -> None:
     """A caller aborting in a `finally` after an explicit abort must not raise."""
     engine = OratoriaEngine.local(configuration())
+    await engine.warmup()
     stream = engine.create_stream()
     await stream.abort()
     await stream.abort()
@@ -355,13 +389,17 @@ def test_every_sdk_error_is_catchable_as_one_type() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_two_engines_on_the_same_audio_agree_on_the_evidence(tmp_path: Path) -> None:
-    """The claim the whole SDK rests on.
+async def test_the_local_engine_is_deterministic_across_runs(tmp_path: Path) -> None:
+    """Two **local** engines, same input, same evidence.
 
-    Same script, same configuration, same clock: the documents must be equal
-    everywhere except the identifiers and stamps that differ by construction.
-    If this fails, the SDK is a second engine rather than a second way of
-    running one, and nothing else in the suite would say so.
+    Named for what it proves. It was called a conformance test and it is not:
+    it compares one implementation with itself, which demonstrates determinism
+    - NFR-015's "equivalent output from equivalent input" - and says nothing
+    about whether the hosted service agrees.
+
+    Real local/remote conformance needs `OratoriaClient`, which does not exist.
+    When it does, `_canonical` below is the comparison it has to pass, and this
+    test is the half of it that already works.
     """
     recording = a_recording(tmp_path / "p.wav")
 
@@ -371,6 +409,7 @@ async def test_two_engines_on_the_same_audio_agree_on_the_evidence(tmp_path: Pat
             EngineConfiguration(speech_runtime=_scripted(), window_seconds=1),
             clock=FrozenClock(start_ms=1_000_000),
         )
+        await engine.warmup()
         result = await engine.analyze_file(recording)
         documents.append(_canonical(result))
 
@@ -385,25 +424,23 @@ def _canonical(result: AnalysisResult) -> dict[str, object]:
     engines agree. Comparing raw documents would fail on them every time and
     the test would be deleted within a week.
     """
-    document = result.document
+    evidence = result.evidence
     return {
-        "raw_text": document.transcript.raw_text(),
-        "unaligned": document.transcript.unaligned_count,
-        "tokens": [
-            (token.raw_text, token.sequence.key, token.is_timed, token.status.value)
-            for token in document.transcript.tokens
+        "raw_text": evidence.transcript.raw_text,
+        "unaligned": evidence.transcript.unaligned_count,
+        "words": [
+            (word.text, word.sequence, word.is_timed, word.status)
+            for word in evidence.transcript.words
         ],
-        "speech_events": [
-            (event.type.value, event.interval.start.ms, event.raw_text)
-            for event in document.speech_events
-        ],
-        "visual_events": [event.type.value for event in document.visual_events],
-        "cooccurrences": len(document.cooccurrences),
-        "ranking_authority": document.ranking_authority,
-        "taxonomy_version": str(document.manifest.taxonomy_version),
-        "schema_version": str(document.manifest.schema_version),
-        "pipeline_version": str(document.manifest.pipeline_version),
-        "configuration": document.manifest.configuration.value,
+        "speech_events": [(e.type, e.start_ms, e.raw_text) for e in evidence.speech_events],
+        "visual_events": [e.type for e in evidence.visual_events],
+        "ranking_authority": evidence.ranking_authority,
+        "manifest": (
+            evidence.manifest.taxonomy_version,
+            evidence.manifest.schema_version,
+            evidence.manifest.pipeline_version,
+            evidence.manifest.configuration_id,
+        ),
     }
 
 
@@ -413,3 +450,173 @@ def _scripted() -> object:
     )
 
     return DeterministicSpeechRuntime(SCRIPT)
+
+
+# ---------------------------------------------------------------------------
+# The three blockers a review found in the first cut of this facade
+# ---------------------------------------------------------------------------
+
+
+def test_constructing_an_engine_loads_no_model() -> None:
+    """`local()` used to call `build_speech_runtime()`, which loads 3 GB.
+
+    That made `hardware_preflight()` - the method whose entire purpose is to be
+    asked *before* committing to that download - reachable only afterwards. The
+    docstring said construction loaded no model while the line above it did.
+    """
+    engine = OratoriaEngine.local(EngineConfiguration(runtime="baseline_whisper"))
+
+    assert engine._speech is None
+    # And the preflight is answerable on a machine that could never load it.
+    assert isinstance(engine.hardware_preflight(), HardwareReport)
+
+
+def test_a_supplied_runtime_is_wired_immediately() -> None:
+    """There is nothing to defer when the caller already built it."""
+    runtime = _scripted()
+    engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=runtime))
+    assert engine._speech is runtime
+
+
+@pytest.mark.parametrize("call", ["analyze_file", "create_stream"])
+async def test_analysing_before_warmup_is_refused(tmp_path: Path, call: str) -> None:
+    """Loading implicitly on first use would hide a 3 GB download in a decode.
+
+    It would also make `hardware_preflight()` advice nobody has to take: the
+    model would arrive whether or not the machine could hold it.
+    """
+    engine = OratoriaEngine.local(configuration())
+
+    with pytest.raises(EngineNotWarmed, match="warmup"):
+        if call == "analyze_file":
+            await engine.analyze_file(a_recording(tmp_path / "p.wav"))
+        else:
+            engine.create_stream()
+
+
+async def test_closing_releases_the_runtime() -> None:
+    """`aclose()` was a no-op with a docstring saying there was nothing to release.
+
+    True of the in-memory adapters, false of the model: a warmed
+    `baseline_whisper` engine holds a CUDA context and about 4.2 GiB, so a
+    consumer who closed one and built another on an 8 GB card ran out of memory
+    on a machine that should have fitted both.
+    """
+    engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted()))
+    await engine.warmup()
+    assert engine._speech is not None
+
+    await engine.aclose()
+
+    assert engine._speech is None
+    # And it is no longer usable without warming again, rather than silently
+    # working on a runtime that was meant to be released.
+    with pytest.raises(EngineNotWarmed):
+        engine.create_stream()
+
+
+async def test_closing_twice_is_safe() -> None:
+    """A consumer closing in a `finally` after an explicit close must not raise."""
+    engine = OratoriaEngine.local(configuration())
+    await engine.aclose()
+    await engine.aclose()
+
+
+# ---------------------------------------------------------------------------
+# The public result types
+# ---------------------------------------------------------------------------
+
+
+async def test_the_result_carries_no_domain_entity(tmp_path: Path) -> None:
+    """The leak, as a regression.
+
+    `AnalysisResult.document` was an `EvidenceDocument`. The absence test above
+    passed - the class is not at the package root - while every consumer
+    reaching through the field was coupled to the domain anyway.
+    """
+    engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_scripted(), window_seconds=1))
+    await engine.warmup()
+    result = await engine.analyze_file(a_recording(tmp_path / "p.wav"))
+
+    assert not hasattr(result, "document")
+    assert type(result.evidence).__module__.startswith("evidence_engine.sdk")
+    assert type(result.transcript).__module__.startswith("evidence_engine.sdk")
+    for word in result.transcript.words:
+        assert type(word).__module__.startswith("evidence_engine.sdk")
+        assert type(word.placement).__module__.startswith("evidence_engine.sdk")
+        assert type(word.confidence).__module__.startswith("evidence_engine.sdk")
+
+
+async def test_absence_survives_the_translation_to_public_types(tmp_path: Path) -> None:
+    """A DTO layer is where `Measured | Unavailable` usually dies.
+
+    The obvious translation writes `confidence: float | None`, and by the time
+    the number reaches a reader it says the model scored the word zero. Both
+    unions are preserved as separate types with no numeric attribute on the
+    absent side.
+    """
+    engine = OratoriaEngine.local(EngineConfiguration(speech_runtime=_unscored(), window_seconds=1))
+    await engine.warmup()
+    result = await engine.analyze_file(a_recording(tmp_path / "p.wav"))
+
+    words = result.transcript.words
+    assert words, "the script should have produced words"
+
+    unscored = [w for w in words if isinstance(w.confidence, ConfidenceUnavailable)]
+    assert unscored, "the runtime reported no posterior; that must survive"
+    assert unscored[0].confidence.reason == "posterior_not_reported"
+    assert not hasattr(unscored[0].confidence, "value")
+
+    unplaced = [w for w in words if isinstance(w.placement, AlignmentUnavailable)]
+    assert unplaced, "the runtime emitted an unaligned word; that must survive"
+    assert not hasattr(unplaced[0].placement, "start_ms")
+    assert unplaced[0].text in result.transcript.raw_text
+    assert result.transcript.unaligned_count == len(unplaced)
+
+
+def _unscored() -> object:
+    """A runtime that reports no posterior and one unplaceable word.
+
+    Both are what the Whisper baseline actually does, reproduced without a GPU
+    so the translation is tested rather than the model.
+    """
+    from evidence_engine.application.ports.runtimes import (
+        SpeechResult,
+        TimedWordHypothesis,
+        UntimedWordHypothesis,
+    )
+    from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+
+    absent = Unavailable(reason=UnavailabilityReason.POSTERIOR_NOT_REPORTED)
+
+    class _Runtime:
+        emitted_speech_events: frozenset[object] = frozenset()
+        emitted_prosody: frozenset[object] = frozenset()
+        capability_detail = "no posterior, one unaligned word"
+
+        async def transcribe(self, window: object) -> object:
+            # Re-emits the same two words on every call, because a streaming
+            # runtime emits its whole *active region* rather than only what is
+            # new: `Transcript.with_provisional` replaces the revisable tail
+            # wholesale, so a runtime reporting only new words silently drops
+            # everything not yet finalized. The first version of this fake did
+            # exactly that and the words vanished - the same failure
+            # `deterministic.py` documents from the first end-to-end run.
+            return SpeechResult(
+                model_version=ModelVersionId("unscored-v1"),
+                window_position_ms=0,
+                words=(
+                    TimedWordHypothesis(
+                        raw_text="hola", start_ms=0, end_ms=300, score=absent, index=0
+                    ),
+                    UntimedWordHypothesis(raw_text="mundo", score=absent, index=1),
+                ),
+                # Nothing declared stable. A runtime that finalizes a stretch
+                # and then re-emits it is contradicting itself, and the
+                # transcript refuses the second pass rather than rewriting
+                # finalized history (§6.1 step 9). The engine caught this
+                # fake doing it.
+                stable_through_ms=0,
+            )
+
+    return _Runtime()

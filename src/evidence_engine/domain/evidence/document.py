@@ -226,9 +226,25 @@ class EvidenceDocument:
             "prosody",
             [(r.window.start.ms, r.window.end.ms, r.indicator.value) for r in self.prosody],
         )
+        # **Timed tokens only.** A word whose alignment failed has no interval,
+        # and asking one for a boundary raises `FabricatedValue` by design - so
+        # this used to abort document construction on any transcript containing
+        # an unplaced word, which is exactly the case the placement union was
+        # added to support. Nothing caught it because no test had an unplaced
+        # token reach an `EvidenceDocument`.
+        #
+        # Ordering the placed tokens is still the right check: they are what a
+        # consumer reads against the clock, and their relative order is what
+        # a non-deterministic assembly would disturb. The unplaced ones carry a
+        # lexical sequence instead, which `Transcript` orders and this object
+        # has no clock-based claim to make about.
         _require_time_ordered(
             "transcript.tokens",
-            [(t.interval.start.ms, t.interval.end.ms, t.id.value) for t in self.transcript.tokens],
+            [
+                (t.interval.start.ms, t.interval.end.ms, t.id.value)
+                for t in self.transcript.tokens
+                if t.is_timed
+            ],
         )
 
     # -- queries ----------------------------------------------------------

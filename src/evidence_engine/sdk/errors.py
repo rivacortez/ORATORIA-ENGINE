@@ -41,3 +41,13 @@ class AudioNotUsable(OratoriaError):
 
 class StreamAlreadyClosed(OratoriaError):
     """A finished or aborted session was used again."""
+
+
+class EngineNotWarmed(OratoriaError):
+    """Analysis was attempted before the model was loaded.
+
+    Raised rather than loading implicitly, because an implicit load puts a 3 GB
+    download inside a call the caller timed as a transcription - and makes
+    `hardware_preflight()`, which exists to be asked before that download,
+    advice nobody has to take.
+    """

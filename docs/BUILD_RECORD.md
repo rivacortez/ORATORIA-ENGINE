@@ -436,6 +436,32 @@ results that look alike, which is the worst available outcome.
 CI. One such import would drag the `server` extra into every embedded install
 and undo C9. Verified by reintroducing it: C1 broke.
 
+### 3.19 The model loads in `warmup()`, and `aclose()` gives the card back
+
+**Decision.** `OratoriaEngine.local()` builds no speech runtime.
+`hardware_preflight()` answers from the machine alone; `warmup()` builds the
+runtime, loads the weights and decodes; `analyze_file` and `create_stream`
+refuse with `EngineNotWarmed` until it has. `aclose()` drops the runtime and
+empties CUDA's cached allocator.
+
+**Measured on the workstation** (RTX 5060 Laptop, 8150 MiB, sm_120):
+
+| | |
+| --- | --- |
+| runtime built by `local()` | none |
+| `warmup()` | 19.5 s, 2 977 MiB allocated, 7 568 MiB reserved |
+| after `aclose()` | **32 MiB reserved** |
+| `analyze_file` on 6.0 s of audio | 5.3 s, RTF 0.89 |
+
+**Why `__del__` is a net and not the mechanism.** It runs at a time nobody
+controls, so the explicit call stays supported and the finaliser only shortens
+the leak for a consumer who forgot.
+
+**On the RTF.** 0.89 is one measurement on one six-second file with a 25 s
+window, so window padding dominates it. It is evidence that the card keeps up
+on this input, not a throughput figure - and `REFERENCE_ENVIRONMENT.md` says a
+development laptop never sources a reported number anyway.
+
 ---
 
 ## 4. Mistakes, and what they cost
@@ -633,6 +659,56 @@ and the test stayed green. That step is the only reason this was found.
 **Rule.** Proving a test red is not ceremony. It is the only thing that
 distinguishes a guard from a comment.
 
+---
+
+### 4.13 The SDK facade shipped with three defects a review caught
+
+All three were in the first cut of `OratoriaEngine`, all three confirmed
+against source, and each is the same kind of error: a docstring asserting the
+opposite of the code beside it.
+
+*The model loaded before the preflight.* `local()` called
+`build_speech_runtime()`, which for the baseline downloads and loads 3 GB - so
+`hardware_preflight()`, whose entire purpose is to be asked before that, was
+reachable only afterwards. The docstring said "constructing this does **not**
+load a model" directly above the line that did.
+
+*The facade leaked a domain entity.* `AnalysisResult.document` was an
+`EvidenceDocument`, under a docstring calling it "the published contract, not
+an internal entity". The surface test passed - the class is not exported from
+the package root - while every consumer reaching through the field was coupled
+to the domain. **A leak through a field is still a leak, and an absence test
+that only checks the root cannot see it.**
+
+*`aclose()` did not release the GPU.* A no-op returning `None`, documented as
+having nothing to release. True of the in-memory adapters and false of a warmed
+model holding 7.5 GiB of reserved device memory.
+
+**Cost.** One review round, and the third would have shown up as an
+out-of-memory error on the second engine a consumer built.
+
+**Rule.** When a docstring makes a claim about behaviour, the test asserts the
+behaviour rather than the docstring. Two of these three were caught by reading
+the code beside the sentence, which no test did.
+
+---
+
+### 4.14 The document invariant could not survive its own union
+
+Fixing the leak surfaced a defect in §3.14's own work: `EvidenceDocument`
+asserts clock order over **every** transcript token and reads `t.interval`
+unconditionally, so a document containing an unplaced word raised
+`FabricatedValue` during construction - aborting the exact case the placement
+union was added to support.
+
+**Cost.** Nothing, because it was found. Nothing in the suite had put an
+unplaced token into an `EvidenceDocument`; the tests written for §3.14 all
+stopped at the transcript.
+
+**Rule.** A union added at one layer has to be driven through every layer that
+consumes it, in one test, or the layers that were never exercised keep the old
+assumption.
+
 ## 5. What is blocked, and by what
 
 Four things gate almost everything downstream. None of them is an engineering
@@ -645,7 +721,17 @@ problem.
 | ~~No model weights~~              | —                                          | **cleared 2026-09-05.** The pinned Whisper artifact was downloaded, its digest verified byte for byte, and run over real Peruvian audio on this machine. torch is still not a dependency _of the repository_, which is correct: the runtime lands with Phase 3. |
 | ~~No provisioned inference host~~ | —                                          | **was never a blocker for a pilot.** `whisper-large-v3` fp16 is 3.09 GB and loads in 4.19 GiB on the workstation's 8 GB card. It remains a blocker for any _reported_ figure, by this project's own rule.                                                       |
 
-~~**A fifth, found while wiring the docs page.** There is no way to provision
+~~**A sixth, found by running a real recording through the SDK.** The evidence
+manifest records **no model** for a run that produced only a transcript.
+`_models_used` (`complete_session.py:253`) reads provenance from speech and
+visual *events*; the Whisper baseline emits none, so a document with five
+recognised words carries `models: {}`. NFR-014 requires the model version on
+every derived event and a word token is derived evidence, so the provenance of
+the transcript is currently lost. Not a ten-line fix: `WordToken` carries no
+provenance field, so this is a design decision about where a token's model
+version lives. Blocks any claim that a transcript is attributable.
+
+**A fifth, found while wiring the docs page.** There is no way to provision
 an API key in a real deployment.~~ **Cleared 2026-09-05.** `/v1/admin` and
 `PostgresApiKeyAdministration` now create applications, issue keys, list them
 and revoke them; `evidence-engine bootstrap-admin` mints the first operator
