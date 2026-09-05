@@ -106,10 +106,16 @@ operation carries a tag with a description, the bearer scheme is declared so
 the create-session example is generated from the domain enums so that pressing
 "Try it out" produces a 201 rather than a 400 (§3.12).
 
-`evidence-engine issue-key` mints a key and prints the export line the server
-reads. `evidence-engine show-config` prints the configuration snapshot a run
-would use, ending with the reason no publication gate opens: nothing is
-calibrated, so every confidence is `RAW`.
+`/v1/admin` is the provisioning surface a developer portal calls: create an
+application under a tenant, issue a key (secret returned once), list keys by
+prefix, revoke. It requires the `admin` scope and refuses to issue it (§3.13).
+
+`evidence-engine issue-key` mints a local key and prints the export line the
+server reads. `evidence-engine bootstrap-admin` mints the first operator key
+against the database — the only way one comes into existence.
+`evidence-engine show-config` prints the configuration snapshot a run would
+use, ending with the reason no publication gate opens: nothing is calibrated,
+so every confidence is `RAW`.
 
 `scripts/present.py` records a presentation from a named physical microphone
 and runs it through the engine offline. Its report ends with what it did _not_
@@ -263,8 +269,41 @@ like an issued key. Requests made with it are attributed to tenant `local`,
 application `local-development` — names no study would use, so evidence from a
 local trial is identifiable as such in the audit log.
 
-**Still open.** There is no provisioning path for a real deployment. Recorded
-in §5.
+**Closed by §3.13**, which built the provisioning path. This local affordance
+stays: it needs no database, and a laptop demo should not require one.
+
+### 3.13 `admin` is an operator credential, and the API refuses to mint one
+
+**Decision.** `/v1/admin` provisions applications and keys. `ISSUABLE_SCOPES`
+is `frozenset(Scope) - {Scope.ADMIN}`, so the administration API can create
+any customer key and **cannot create another operator key**. Operator keys come
+only from `evidence-engine bootstrap-admin`, run by a person against the
+database.
+
+**Why the split exists at all.** A developer portal — somebody signs up, presses
+"Generate API key" — needs a credential that can provision across tenants,
+because creating a tenant cannot happen from inside one. `Scope.ADMIN` already
+was that: `allows()` treats it as a superset of every scope. It had simply never
+been issued to anything, and no route required it.
+
+**Why the refusal is the load-bearing part.** With it, a stolen operator key can
+create customer keys — bad, and undone by revoking the operator key. Without it,
+the thief mints a second operator key and revoking the first achieves nothing.
+That single property is what makes the blast radius of the one unbounded
+credential bounded, so it is asserted by the first test in
+`test_key_provisioning.py` and by the CLI's own printed warning.
+
+**Two smaller rules that follow from it.** A key's tenant comes from its
+application row, never from the request that created it — the tenant stamp is
+what every NFR-013 isolation check reads. And `_require_operator` tests
+membership rather than calling `allows()`: `allows(Scope.ADMIN)` gives the same
+answer today and would keep giving one if some future scope were made to imply
+administration.
+
+**What is deliberately absent.** Users, passwords, signup, email. `SCOPE.md`
+puts the student and the instructor behind the consuming application and says
+the engine never occupies that position. Accounts belong to the portal; tenants,
+applications and keys belong here.
 
 ### 3.12 The Swagger example is generated from the domain enums
 
@@ -418,6 +457,21 @@ the one checking a security scheme.
 printed warning. Anything checked against a reloaded server is unverified until
 the process has been restarted. Windows 11, uvicorn + WatchFiles.
 
+---
+
+### 4.10 The formatter kept deleting imports, three times
+
+An import added _before_ the code that uses it is unused at that instant, and
+the repository's format-on-write hook runs `ruff --fix`, which removes it. Three
+separate failures — `container.py`, `schemas.py`, `test_key_provisioning.py` —
+each surfacing as a `NameError` in a test run rather than at the edit.
+
+**Cost.** Three debugging cycles on a problem that was never in the code being
+written.
+
+**Rule.** Write the usage first and add the import last, or check the file after
+the hook has run. The tool is not wrong; the ordering was.
+
 ## 5. What is blocked, and by what
 
 Four things gate almost everything downstream. None of them is an engineering
@@ -430,12 +484,13 @@ problem.
 | ~~No model weights~~              | —                                          | **cleared 2026-09-05.** The pinned Whisper artifact was downloaded, its digest verified byte for byte, and run over real Peruvian audio on this machine. torch is still not a dependency _of the repository_, which is correct: the runtime lands with Phase 3. |
 | ~~No provisioned inference host~~ | —                                          | **was never a blocker for a pilot.** `whisper-large-v3` fp16 is 3.09 GB and loads in 4.19 GiB on the workstation's 8 GB card. It remains a blocker for any _reported_ figure, by this project's own rule.                                                       |
 
-**A fifth, found while wiring the docs page.** There is **no way to provision
-an API key in a real deployment**. `PostgresApiKeyDirectory` implements
-`authenticate` and `revoke`; it has no `issue`, and no endpoint or migration
-creates one. The local path is covered by `ENGINE_BOOTSTRAP_API_KEY` (§3.11),
-which is deliberately refused outside `ENGINE_ENVIRONMENT=local`. Blocks any
-deployment that is not this laptop; does not block a pilot.
+~~**A fifth, found while wiring the docs page.** There is no way to provision
+an API key in a real deployment.~~ **Cleared 2026-09-05.** `/v1/admin` and
+`PostgresApiKeyAdministration` now create applications, issue keys, list them
+and revoke them; `evidence-engine bootstrap-admin` mints the first operator
+key. Recorded rather than deleted because the gap existed for the whole build
+and was found by writing a shell script that told an operator to run a command
+that did not exist — see §3.13.
 
 **Two of the four turned out not to be blockers.** Recorded that way rather
 than quietly deleted: they were listed on the strength of an assumption that

@@ -26,7 +26,12 @@ import secrets
 from dataclasses import dataclass
 
 from evidence_engine.adapters.outbound.cache.in_memory import ClockReader
-from evidence_engine.application.ports.platform import AuthenticatedCaller, Scope
+from evidence_engine.application.ports.platform import (
+    ApiKeyDescriptor,
+    AuthenticatedCaller,
+    ClientApplicationRecord,
+    Scope,
+)
 from evidence_engine.domain.shared.identifiers import ApiKeyId, ApplicationId, TenantId
 
 #: Prefix carried in the clear so a leaked key is identifiable in a scan of
@@ -69,12 +74,23 @@ def generate_secret() -> str:
 
 
 class InMemoryApiKeyDirectory:
-    """Resolves presented secrets to callers."""
+    """Resolves presented secrets to callers.
+
+    Implements ``ApiKeyDirectory`` - the hot path - and nothing else.
+    Provisioning lives in ``InMemoryApiKeyAdministration``, which wraps one of
+    these. That is the two-port split of ``ApiKeyAdministration`` made
+    structural rather than merely documented: an object handed this class can
+    authenticate and cannot mint.
+
+    The synchronous ``issue`` and ``revoke`` here are the storage primitives.
+    They are not the port; the wrapper is.
+    """
 
     def __init__(self, pepper: str, clock: ClockReader) -> None:
         self._pepper = pepper
         self._clock = clock
         self._by_hash: dict[str, ApiKeyRecord] = {}
+        self._applications: dict[str, ClientApplicationRecord] = {}
 
     def register(self, record: ApiKeyRecord) -> None:
         self._by_hash[record.hashed_secret] = record
@@ -102,10 +118,18 @@ class InMemoryApiKeyDirectory:
 
     def revoke(self, key_id: ApiKeyId, at_ms: int) -> bool:
         """US-006: revocation blocks new calls immediately."""
+        return self.revoke_returning(key_id, at_ms) is not None
+
+    def revoke_returning(self, key_id: ApiKeyId, at_ms: int) -> ApiKeyRecord | None:
         for hashed, record in self._by_hash.items():
             if record.id != key_id:
                 continue
-            self._by_hash[hashed] = ApiKeyRecord(
+            if record.revoked_at_ms is not None:
+                # Already revoked. Returned rather than re-stamped, so the
+                # audit trail keeps the moment the credential actually stopped
+                # working instead of the moment somebody last pressed a button.
+                return record
+            revoked = ApiKeyRecord(
                 id=record.id,
                 application=record.application,
                 tenant=record.tenant,
@@ -115,8 +139,25 @@ class InMemoryApiKeyDirectory:
                 expires_at_ms=record.expires_at_ms,
                 revoked_at_ms=at_ms,
             )
-            return True
-        return False
+            self._by_hash[hashed] = revoked
+            return revoked
+        return None
+
+    # -- storage for the administration wrapper ------------------------------
+
+    def put_application(self, record: ClientApplicationRecord) -> None:
+        self._applications[record.id.value] = record
+
+    def application(self, application: ApplicationId) -> ClientApplicationRecord | None:
+        return self._applications.get(application.value)
+
+    def applications_of(self, tenant: TenantId) -> tuple[ClientApplicationRecord, ...]:
+        return tuple(record for record in self._applications.values() if record.tenant == tenant)
+
+    def keys_of(self, application: ApplicationId) -> tuple[ApiKeyRecord, ...]:
+        return tuple(
+            record for record in self._by_hash.values() if record.application == application
+        )
 
     async def authenticate(
         self, presented_secret: str, trace_id: str
@@ -144,3 +185,70 @@ class InMemoryApiKeyDirectory:
             scopes=matched.scopes,
             trace_id=trace_id,
         )
+
+
+def describe(record: ApiKeyRecord) -> ApiKeyDescriptor:
+    """The administrator's view of a stored key.
+
+    A separate type from ``ApiKeyRecord`` rather than the record itself,
+    because the record carries ``hashed_secret``. It is not the plaintext and
+    leaking it is not immediately catastrophic - but it is the value an
+    offline attack runs against, NFR-010 keeps it out of dumps, and a
+    descriptor that carried it would put it one `JSONResponse` from a browser.
+    """
+    return ApiKeyDescriptor(
+        key_id=record.id,
+        application=record.application,
+        tenant=record.tenant,
+        prefix=record.prefix,
+        scopes=record.scopes,
+        expires_at_ms=record.expires_at_ms,
+        revoked_at_ms=record.revoked_at_ms,
+    )
+
+
+class InMemoryApiKeyAdministration:
+    """``ApiKeyAdministration`` over an in-memory directory.
+
+    A wrapper rather than more methods on the directory. The two ports exist
+    because authenticating and provisioning need different privileges, and a
+    single class implementing both would hand every holder of the directory -
+    including the request path - the ability to mint. Here the split costs one
+    small class and buys a property a reader can check by looking at a type.
+    """
+
+    def __init__(self, directory: InMemoryApiKeyDirectory) -> None:
+        self._directory = directory
+
+    async def create_application(self, tenant: TenantId, name: str) -> ClientApplicationRecord:
+        record = ClientApplicationRecord(
+            id=ApplicationId(f"app_{secrets.token_hex(8)}"),
+            tenant=tenant,
+            name=name,
+            status="active",
+        )
+        self._directory.put_application(record)
+        return record
+
+    async def list_applications(self, tenant: TenantId) -> tuple[ClientApplicationRecord, ...]:
+        return self._directory.applications_of(tenant)
+
+    async def get_application(self, application: ApplicationId) -> ClientApplicationRecord | None:
+        return self._directory.application(application)
+
+    async def issue(
+        self,
+        application: ApplicationId,
+        tenant: TenantId,
+        scopes: frozenset[Scope],
+        expires_at_ms: int | None = None,
+    ) -> tuple[str, ApiKeyDescriptor]:
+        secret, record = self._directory.issue(application, tenant, scopes, expires_at_ms)
+        return secret, describe(record)
+
+    async def list_keys(self, application: ApplicationId) -> tuple[ApiKeyDescriptor, ...]:
+        return tuple(describe(record) for record in self._directory.keys_of(application))
+
+    async def revoke(self, key_id: ApiKeyId, at_ms: int) -> ApiKeyDescriptor | None:
+        record = self._directory.revoke_returning(key_id, at_ms)
+        return None if record is None else describe(record)

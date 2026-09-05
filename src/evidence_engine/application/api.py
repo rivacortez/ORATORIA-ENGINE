@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from evidence_engine.application.commands.administer_keys import AdministerApiKeys
 from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
@@ -101,3 +102,7 @@ class EngineApi(Protocol):
     read_session: ReadSession
     read_result: ReadResult
     read_capabilities: ReadCapabilities
+    #: Provisioning. Reachable only with `Scope.ADMIN`, which the use case
+    #: checks - the transport does not, deliberately, so the rule holds on
+    #: every entry point rather than on the one that remembered it.
+    administer_keys: AdministerApiKeys

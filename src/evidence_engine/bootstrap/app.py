@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from evidence_engine.adapters.inbound.rest import errors, health, sessions
+from evidence_engine.adapters.inbound.rest import administration, errors, health, sessions
 from evidence_engine.adapters.inbound.websocket import handler as stream_handler
 from evidence_engine.bootstrap.container import SCHEMA_VERSION, Container, build_container
 from evidence_engine.bootstrap.settings import Settings
@@ -81,6 +81,17 @@ OPENAPI_TAGS = [
             "speaker), and every derived record hangs off a processing run rather "
             "than off the session, so a session processed twice keeps both results "
             "distinguishable."
+        ),
+    },
+    {
+        "name": "administration",
+        "description": (
+            "Provisioning: client applications and the API keys that authenticate "
+            "them. **Requires the `admin` scope**, which is a platform-operator "
+            "credential rather than a customer one - it is a superset of every "
+            "other scope, and this API deliberately refuses to mint another one. "
+            "The plaintext key appears in exactly one response and is not "
+            "recoverable; only a peppered hash is stored (FR-002)."
         ),
     },
     {
@@ -154,6 +165,7 @@ def create_app(container: Container | None = None, settings: Settings | None = N
 
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(administration.router)
     app.include_router(stream_handler.router)
 
     errors.install(app, str(SCHEMA_VERSION))

@@ -47,6 +47,7 @@ from evidence_engine.adapters.outbound.persistence.configuration import (
 )
 from evidence_engine.adapters.outbound.persistence.identity import (
     ApiKeyRecord,
+    InMemoryApiKeyAdministration,
     InMemoryApiKeyDirectory,
     hash_secret,
 )
@@ -57,6 +58,7 @@ from evidence_engine.adapters.outbound.persistence.in_memory import (
     InMemorySessionRepository,
 )
 from evidence_engine.adapters.outbound.persistence.postgres.control_plane import (
+    PostgresApiKeyAdministration,
     PostgresApiKeyDirectory,
     PostgresConfigurationStore,
     PostgresModelRegistry,
@@ -77,6 +79,7 @@ from evidence_engine.adapters.outbound.persistence.tokens import HmacStreamToken
 from evidence_engine.adapters.outbound.telemetry.clock import SystemClock
 from evidence_engine.adapters.outbound.telemetry.structured import StructlogTelemetry
 from evidence_engine.application.api import RuntimeProfile
+from evidence_engine.application.commands.administer_keys import AdministerApiKeys
 from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
@@ -87,6 +90,7 @@ from evidence_engine.application.commands.open_run import (
 )
 from evidence_engine.application.ports.clock import Clock
 from evidence_engine.application.ports.platform import (
+    ApiKeyAdministration,
     ApiKeyDirectory,
     ApprovalState,
     ConfigurationSnapshot,
@@ -163,6 +167,11 @@ class Container:
     configuration: ConfigurationStore
     registry: ModelRegistry
     api_keys: ApiKeyDirectory
+    #: The provisioning port, exposed here and deliberately NOT on `EngineApi`.
+    #: A transport reaches provisioning through `administer_keys`, which checks
+    #: the operator scope; the only caller that needs the raw port is
+    #: `bootstrap-admin`, which runs before any operator key exists.
+    key_admin: ApiKeyAdministration
     tokens: StreamTokenMinter
     speech: SpeechRuntime
     vision: VisionRuntime
@@ -178,6 +187,7 @@ class Container:
     read_session: ReadSession
     read_result: ReadResult
     read_capabilities: ReadCapabilities
+    administer_keys: AdministerApiKeys
 
     #: Async callables that release the infrastructure this container holds -
     #: the database connection pool, the Redis client. Empty for the memory
@@ -258,6 +268,7 @@ def build_container(
     configuration: ConfigurationStore
     registry: ModelRegistry
     api_keys: ApiKeyDirectory
+    key_admin: ApiKeyAdministration
 
     closers: tuple[Callable[[], Awaitable[None]], ...] = ()
 
@@ -292,6 +303,9 @@ def build_container(
         api_keys = PostgresApiKeyDirectory(
             factory, settings.api_key_pepper, resolved_clock.epoch_ms
         )
+        key_admin = PostgresApiKeyAdministration(
+            factory, settings.api_key_pepper, resolved_clock.epoch_ms
+        )
     else:
         sessions = InMemorySessionRepository()
         runs = InMemoryRunRepository()
@@ -308,6 +322,7 @@ def build_container(
                 directory, settings.bootstrap_api_key, settings.api_key_pepper
             )
         api_keys = directory
+        key_admin = InMemoryApiKeyAdministration(directory)
 
     tokens = HmacStreamTokenMinter(settings.stream_token_signing_key)
 
@@ -338,6 +353,7 @@ def build_container(
         configuration=configuration,
         registry=registry,
         api_keys=api_keys,
+        key_admin=key_admin,
         tokens=tokens,
         speech=speech,
         vision=vision,
@@ -372,6 +388,7 @@ def build_container(
         read_session=ReadSession(sessions=sessions),
         read_result=ReadResult(sessions=sessions, evidence=evidence),
         read_capabilities=ReadCapabilities(SCHEMA_VERSION),
+        administer_keys=AdministerApiKeys(directory=key_admin, audit=audit, clock=resolved_clock),
         closers=closers,
     )
 

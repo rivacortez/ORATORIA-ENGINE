@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from evidence_engine.application.commands.administer_keys import ISSUABLE_SCOPES
+from evidence_engine.application.ports.platform import Scope
 from evidence_engine.domain.evidence.document import EvidenceDocument
 from evidence_engine.domain.sessions.capabilities import SUPPORTED_LOCALES, AudioCodec
 
@@ -145,6 +147,86 @@ class CreateSessionBody(WireModel):
 
 
 # ---------------------------------------------------------------------------
+# Administration requests (/v1/admin)
+# ---------------------------------------------------------------------------
+
+
+class CreateApplicationBody(WireModel):
+    """``POST /v1/admin/applications``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [{"tenant": "acme-university", "name": "Practice app (production)"}]
+        },
+    )
+
+    tenant: str = Field(
+        min_length=1,
+        max_length=64,
+        description=(
+            "The tenant this application belongs to. Evidence is isolated by "
+            "tenant (NFR-013), so this is the boundary between two customers. "
+            "There is no tenant registry: naming a new one creates it."
+        ),
+    )
+    name: str = Field(
+        min_length=1,
+        max_length=255,
+        description=(
+            "A human label. It is what an operator identifies the application "
+            "by when revoking, so 'production' beats 'app2'."
+        ),
+    )
+
+
+#: The scopes a portal actually wants for a capture credential, and a worked
+#: example of the one it must not ask for. Derived from `ISSUABLE_SCOPES` so a
+#: scope added to the enum appears here without anybody remembering to add it.
+_ISSUE_KEY_EXAMPLE: dict[str, Any] = {
+    "scopes": sorted(
+        scope.value
+        for scope in ISSUABLE_SCOPES
+        if scope not in {Scope.EVIDENCE_DELETE, Scope.JOBS_WRITE}
+    ),
+    "expires_at_ms": None,
+}
+
+
+class IssueKeyBody(WireModel):
+    """``POST /v1/admin/applications/{id}/keys``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"examples": [_ISSUE_KEY_EXAMPLE]},
+    )
+
+    scopes: list[str] = Field(
+        min_length=1,
+        description=(
+            "What the key may do. Issuable: "
+            + ", ".join(f"`{scope.value}`" for scope in sorted(ISSUABLE_SCOPES))
+            + ". `admin` is refused: it is a platform-operator credential, and "
+            "an API that could mint one would let a leaked operator key create "
+            "its own successor.\n\n"
+            "Grant the least that works. `evidence:delete` is separate from the "
+            "write scopes precisely so a capture credential that leaks into a "
+            "client bundle cannot also erase a study's data."
+        ),
+    )
+    expires_at_ms: int | None = Field(
+        default=None,
+        description=(
+            "Epoch milliseconds, or null for a key that does not expire. Must "
+            "be in the future and within a year: an expiry further out is "
+            "unbounded while looking bounded."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Responses
 # ---------------------------------------------------------------------------
 
@@ -155,6 +237,62 @@ class Envelope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: str
+
+
+class ApplicationBody(Envelope):
+    """One client application."""
+
+    application_id: str
+    tenant: str
+    name: str
+    status: str
+
+
+class ApplicationListBody(Envelope):
+    applications: list[ApplicationBody]
+
+
+class ApiKeyBody(Envelope):
+    """One key, as a dashboard renders it.
+
+    There is no ``secret`` field and there will not be one. The plaintext
+    exists in exactly one response - ``IssuedKeyBody`` - and only a peppered
+    hash is stored, so nothing could populate it here even if somebody added
+    it (FR-002, NFR-010).
+
+    ``prefix`` is the ``oek_`` marker plus six characters, kept in the clear so
+    a key is identifiable in a list, in a log line and in a scan of somebody's
+    repository, without being usable.
+    """
+
+    key_id: str
+    application_id: str
+    tenant: str
+    prefix: str
+    scopes: list[str]
+    expires_at_ms: int | None
+    revoked_at_ms: int | None
+
+
+class ApiKeyListBody(Envelope):
+    keys: list[ApiKeyBody]
+
+
+class IssuedKeyBody(Envelope):
+    """The one response that carries a plaintext key.
+
+    ``secret`` is not recoverable. A portal shows it once, stores
+    ``key.prefix`` and ``key.key_id``, and tells the person that closing the
+    dialog is final.
+    """
+
+    secret: str = Field(
+        description=(
+            "The API key. **Shown once.** Only a peppered hash is stored, so it "
+            "cannot be retrieved later - store it now or issue another."
+        )
+    )
+    key: ApiKeyBody
 
 
 class NegotiatedCapabilitiesBody(Envelope):

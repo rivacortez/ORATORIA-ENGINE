@@ -91,6 +91,102 @@ class ApiKeyDirectory(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ClientApplicationRecord:
+    """§8 ``ClientApplication``, as an administrator sees it.
+
+    An application is what a key belongs to, and a tenant is what a session is
+    isolated by (NFR-013). Keeping them separate is what lets one customer run
+    a production and a staging integration whose keys can be revoked
+    independently while their evidence stays in one tenant.
+    """
+
+    id: ApplicationId
+    tenant: TenantId
+    name: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiKeyDescriptor:
+    """A key as an administrator sees it.
+
+    Note what is absent, and that its absence is the point: there is no field
+    for the secret, and no method anywhere returns one after issuance. A
+    dashboard listing keys renders ``prefix`` - the ``oek_`` marker plus six
+    characters kept in the clear precisely so a key is identifiable without
+    being usable.
+    """
+
+    key_id: ApiKeyId
+    application: ApplicationId
+    tenant: TenantId
+    prefix: str
+    scopes: frozenset[Scope]
+    expires_at_ms: int | None = None
+    revoked_at_ms: int | None = None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at_ms is not None
+
+
+class ApiKeyAdministration(Protocol):
+    """Provisioning: creating applications, issuing keys, revoking them.
+
+    A separate port from ``ApiKeyDirectory`` rather than more methods on it,
+    for two reasons that both matter.
+
+    *They run on different paths.* ``authenticate`` is called on every single
+    request; these are called when a person presses a button. An adapter built
+    for the hot path - a read-through cache, a replica - can implement the
+    directory honestly and has no business implementing issuance.
+
+    *They need different privileges.* A deployment can give the authenticating
+    component read-only database credentials only if issuance is somewhere
+    else. Merging the two would make that impossible to express.
+
+    Every method takes the tenant explicitly. This port is reached only by a
+    caller holding ``Scope.ADMIN``, which is a platform-operator credential
+    rather than a customer one - see ``AdministerApiKeys`` for why that
+    distinction is enforced rather than merely documented.
+    """
+
+    async def create_application(self, tenant: TenantId, name: str) -> ClientApplicationRecord: ...
+
+    async def list_applications(self, tenant: TenantId) -> tuple[ClientApplicationRecord, ...]: ...
+
+    async def get_application(
+        self, application: ApplicationId
+    ) -> ClientApplicationRecord | None: ...
+
+    async def issue(
+        self,
+        application: ApplicationId,
+        tenant: TenantId,
+        scopes: frozenset[Scope],
+        expires_at_ms: int | None = None,
+    ) -> tuple[str, ApiKeyDescriptor]:
+        """Mint a key, returning the plaintext **exactly once** (FR-002, US-006).
+
+        The first element of the tuple is the only time the secret exists
+        outside the caller's hands. Nothing stores it; only a peppered hash is
+        persisted, so a caller that loses it has to issue another.
+        """
+        ...
+
+    async def list_keys(self, application: ApplicationId) -> tuple[ApiKeyDescriptor, ...]: ...
+
+    async def revoke(self, key_id: ApiKeyId, at_ms: int) -> ApiKeyDescriptor | None:
+        """Block a key immediately. ``None`` when no such key exists.
+
+        Returns the descriptor rather than a boolean so the caller can audit
+        *which* application and tenant just lost a credential without a second
+        read that might see a different row.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
 class QuotaDecision:
     """Whether a call may proceed, and what to tell the caller if not."""
 
