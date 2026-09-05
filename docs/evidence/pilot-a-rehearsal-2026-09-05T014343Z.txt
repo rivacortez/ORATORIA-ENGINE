@@ -1,6 +1,6 @@
 OratorIA - Pilot A rehearsal (mechanical half)
-Captured (UTC): 2026-09-05T01:21:33Z
-Commit:         95a54958674267dda98dc122c598c10504f6679c
+Captured (UTC): 2026-09-05T01:43:43Z
+Commit:         e78f6d43d1dd34804db91d0fabb6d9cd9f77acb7
 Branch:         fix/phase-0-5-annotator-ready
 Tree state:     0 uncommitted file(s) outside docs/evidence
 Python:         Python 3.12.10
@@ -10,9 +10,9 @@ can run. The human half - whether two annotators can explain the tiers
 in their own words - is unanswered and stays unanswered until they do.
 
 === 1. the template opens, and offers the taxonomy and nothing else ===
-wrote C:\Users\rcort\AppData\Local\Temp\tmp.dXOYcrbiJ6\pilot-ana.eaf
+wrote C:\Users\rcort\AppData\Local\Temp\tmp.wk7cGyY3XK\pilot-ana.eaf
 The disfluency and role tiers are controlled vocabularies generated from the published taxonomy: a class outside it cannot be typed.
-wrote C:\Users\rcort\AppData\Local\Temp\tmp.dXOYcrbiJ6\pilot-beto.eaf
+wrote C:\Users\rcort\AppData\Local\Temp\tmp.wk7cGyY3XK\pilot-beto.eaf
 The disfluency and role tiers are controlled vocabularies generated from the published taxonomy: a class outside it cannot be typed.
 
   published speech classes offered : 9/9
