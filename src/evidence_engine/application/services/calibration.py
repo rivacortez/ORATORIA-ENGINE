@@ -22,8 +22,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import pairwise
+from typing import overload
 
 from evidence_engine.domain.shared.confidence import Confidence
+from evidence_engine.domain.shared.measurement import Unavailable
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +87,36 @@ class Calibrator:
 
     curves: Mapping[str, CalibrationCurve] = field(default_factory=dict)
 
-    def calibrate(self, class_identifier: str, raw_score: float) -> Confidence:
+    @overload
+    def calibrate(self, class_identifier: str, raw_score: float) -> Confidence: ...
+
+    @overload
+    def calibrate(self, class_identifier: str, raw_score: Unavailable) -> Unavailable: ...
+
+    @overload
+    def calibrate(
+        self, class_identifier: str, raw_score: float | Unavailable
+    ) -> Confidence | Unavailable: ...
+
+    def calibrate(
+        self, class_identifier: str, raw_score: float | Unavailable
+    ) -> Confidence | Unavailable:
+        """Map a runtime's score onto the calibrated scale, or pass on its absence.
+
+        Overloaded so that only the callers who can actually receive an absence
+        have to handle one. A detector that reports a float still gets a
+        ``Confidence`` back and nothing downstream of it changes; the widening
+        is confined to the word path, which is the only place a runtime says it
+        has no posterior to give.
+
+        A model that reports no posterior gets no confidence. Calibrating one
+        anyway would mean choosing a number - and whichever number is chosen,
+        a consumer reading it cannot tell it from a score the model actually
+        emitted. That is the substitution FR-025 forbids, so the unavailable
+        travels through with its reason intact rather than being resolved here.
+        """
+        if isinstance(raw_score, Unavailable):
+            return raw_score
         curve = self.curves.get(class_identifier)
         if curve is None:
             return Confidence.raw(_clamp_unit(raw_score))

@@ -31,7 +31,9 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from evidence_engine.domain.sessions.capabilities import SUPPORTED_SAMPLE_RATES_HZ
+from evidence_engine.domain.shared.errors import FabricatedValue
 from evidence_engine.domain.shared.identifiers import ModelVersionId
+from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
     ProsodicIndicator,
@@ -160,14 +162,69 @@ def _require_declaration_matches_payload(window: AudioWindow) -> None:
         )
 
 
+#: What a recogniser reports about its own certainty for one item, or an
+#: explicit statement that it reports nothing.
+#:
+#: Not ``float | None``. ``measurement.py`` argues that encoding out at length
+#: and the argument holds here: somebody writes ``score or 0.0`` to make a
+#: chart render, and a word the model never scored becomes a word it scored
+#: zero. ``Unavailable`` raises on ``.value``, so the same line fails loudly.
+type RecogniserScore = float | Unavailable
+
+
 @dataclass(frozen=True, slots=True)
-class WordHypothesis:
-    """One literal word the recognizer heard, with its estimated boundaries."""
+class TimedWordHypothesis:
+    """One literal word the recogniser heard, and placed on the clock."""
 
     raw_text: str
     start_ms: int
     end_ms: int
-    score: float
+    score: RecogniserScore
+    #: Position in the order this runtime emitted words for this window. The
+    #: assembler pairs it with the window position to build a session-global
+    #: `TokenSequence`; a runtime that renumbered between passes would churn
+    #: every token id, so it is the emission order and nothing else.
+    index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UntimedWordHypothesis:
+    """One literal word the recogniser heard and could **not** place.
+
+    The alignment heads fail on fragments. When they do, what is unknown is
+    *where* the word was - not *whether* it was said, and not what it was. This
+    adapter used to drop such a chunk entirely, deleting a recognised word from
+    a verbatim transcript with nothing downstream able to notice: the text
+    renders, it is one word shorter, and no count anywhere disagrees. Driver 1
+    is verbatim fidelity, so the word survives and its position does not get
+    invented.
+
+    There is no ``start_ms`` and no ``end_ms``, by design - the same design as
+    ``Unavailable``. Reaching for one raises instead of returning a ``None``
+    that a caller might coerce to zero.
+    """
+
+    raw_text: str
+    score: RecogniserScore
+    index: int = 0
+    reason: UnavailabilityReason = UnavailabilityReason.ALIGNMENT_UNAVAILABLE
+    detail: str = ""
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"start_ms", "end_ms", "interval"}:
+            raise FabricatedValue(
+                f"cannot read '{name}' from a word with no timing "
+                f"(reason={self.reason.value}); FR-025 forbids substituting a boundary. "
+                "The word is in the transcript; its position on the session clock is not."
+            )
+        raise AttributeError(name)
+
+
+#: A word is exactly one of the two cases, so a consumer has to narrow before
+#: reading a boundary. ``start_ms: int | None`` on each end would instead admit
+#: "start known, end unknown" - a state no aligner produces and every consumer
+#: would have to handle.
+type WordHypothesis = TimedWordHypothesis | UntimedWordHypothesis
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +267,11 @@ class SpeechResult:
     """Everything one speech runtime produced for one window."""
 
     model_version: ModelVersionId
+    #: Where the window this describes began on the session clock. Carried so a
+    #: stateless assembler can build a session-global token sequence from a
+    #: per-window emission index without being told the window separately -
+    #: two arguments that could disagree are two arguments that will.
+    window_position_ms: int = 0
     words: tuple[WordHypothesis, ...] = field(default_factory=tuple)
     events: tuple[SpeechEventHypothesis, ...] = field(default_factory=tuple)
     prosody: tuple[ProsodyHypothesis, ...] = field(default_factory=tuple)

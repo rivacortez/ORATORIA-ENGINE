@@ -371,20 +371,31 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	run_id VARCHAR(64) NOT NULL,
         	tenant_id VARCHAR(64) NOT NULL,
         	raw_text TEXT NOT NULL,
-        	start_ms BIGINT NOT NULL,
-        	end_ms BIGINT NOT NULL,
-        	tolerance_ms INTEGER NOT NULL,
-        	confidence FLOAT NOT NULL,
-        	calibration VARCHAR(16) NOT NULL,
+        	sequence_window_ms BIGINT NOT NULL,
+        	sequence_index INTEGER NOT NULL,
+        	start_ms BIGINT,
+        	end_ms BIGINT,
+        	tolerance_ms INTEGER,
+        	placement_unavailable_reason VARCHAR(64),
+        	placement_unavailable_detail TEXT NOT NULL,
+        	confidence FLOAT,
+        	calibration VARCHAR(16),
+        	confidence_unavailable_reason VARCHAR(64),
+        	confidence_unavailable_detail TEXT NOT NULL,
         	status VARCHAR(16) NOT NULL,
         	PRIMARY KEY (id),
-        	CONSTRAINT ck_token_interval CHECK (end_ms >= start_ms),
-        	CONSTRAINT ck_token_confidence CHECK (confidence between 0 and 1),
+        	CONSTRAINT ck_token_interval CHECK (start_ms is null or end_ms >= start_ms),
+        	CONSTRAINT ck_token_placement_exactly_one_state CHECK ((start_ms is not null and end_ms is not null and tolerance_ms is not null and placement_unavailable_reason is null) or (start_ms is null and end_ms is null and tolerance_ms is null and placement_unavailable_reason is not null)),
+        	CONSTRAINT ck_token_confidence CHECK (confidence is null or confidence between 0 and 1),
+        	CONSTRAINT ck_token_confidence_exactly_one_state CHECK ((confidence is not null and calibration is not null and confidence_unavailable_reason is null) or (confidence is null and calibration is null and confidence_unavailable_reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
         )
     """,
     """
         CREATE INDEX ix_token_run_position ON word_token (run_id, start_ms)
+    """,
+    """
+        CREATE INDEX ix_token_run_sequence ON word_token (run_id, sequence_window_ms, sequence_index)
     """,
     """
         CREATE INDEX ix_word_token_run_id ON word_token (run_id)

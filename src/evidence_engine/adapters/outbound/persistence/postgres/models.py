@@ -199,17 +199,58 @@ class WordTokenRow(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
-    start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    end_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    tolerance_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    calibration: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Lexical order, always present. Two columns rather than one so the pair
+    #: sorts the way the recogniser emitted words: window first, then the index
+    #: within it.
+    sequence_window_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Temporal placement, null together when the aligner could not place the
+    #: word. Null rather than zero: a zero start is a word at the beginning of
+    #: the session, which is wrong and looks entirely plausible in a dump.
+    start_ms: Mapped[int | None] = mapped_column(BigInteger)
+    end_ms: Mapped[int | None] = mapped_column(BigInteger)
+    tolerance_ms: Mapped[int | None] = mapped_column(Integer)
+    placement_unavailable_reason: Mapped[str | None] = mapped_column(String(64))
+    placement_unavailable_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Null when the recogniser reports no per-word posterior. Nullable
+    #: rather than defaulted, and paired with a reason: a 0.0 here would be
+    #: indistinguishable in a dump from a word the model actually scored
+    #: zero, which is the substitution FR-025 forbids.
+    confidence: Mapped[float | None] = mapped_column(Float)
+    calibration: Mapped[str | None] = mapped_column(String(16))
+    confidence_unavailable_reason: Mapped[str | None] = mapped_column(String(64))
+    confidence_unavailable_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
     __table_args__ = (
+        Index("ix_token_run_sequence", "run_id", "sequence_window_ms", "sequence_index"),
         Index("ix_token_run_position", "run_id", "start_ms"),
-        CheckConstraint("end_ms >= start_ms", name="ck_token_interval"),
-        CheckConstraint("confidence between 0 and 1", name="ck_token_confidence"),
+        CheckConstraint("start_ms is null or end_ms >= start_ms", name="ck_token_interval"),
+        # Placement is one state or the other, enforced here rather than only
+        # in the mapper. A row with a start and a reason is uninterpretable; a
+        # row with neither has silently lost the word's position.
+        CheckConstraint(
+            "(start_ms is not null and end_ms is not null and tolerance_ms is not null "
+            "and placement_unavailable_reason is null) or "
+            "(start_ms is null and end_ms is null and tolerance_ms is null "
+            "and placement_unavailable_reason is not null)",
+            name="ck_token_placement_exactly_one_state",
+        ),
+        CheckConstraint(
+            "confidence is null or confidence between 0 and 1",
+            name="ck_token_confidence",
+        ),
+        # Exactly one of the two states, enforced by the database rather
+        # than by the mapper. A row carrying both a score and a reason is a
+        # row nobody can interpret, and one carrying neither has silently
+        # lost the confidence it was written with.
+        CheckConstraint(
+            "(confidence is not null and calibration is not null "
+            "and confidence_unavailable_reason is null) or "
+            "(confidence is null and calibration is null "
+            "and confidence_unavailable_reason is not null)",
+            name="ck_token_confidence_exactly_one_state",
+        ),
     )
 
 

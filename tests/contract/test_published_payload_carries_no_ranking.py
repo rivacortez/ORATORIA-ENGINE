@@ -89,7 +89,12 @@ from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
 from evidence_engine.domain.transcript import transcript as transcript_module
-from evidence_engine.domain.transcript.tokens import TokenStatus, WordToken
+from evidence_engine.domain.transcript.tokens import (
+    Timed,
+    TokenSequence,
+    TokenStatus,
+    WordToken,
+)
 from evidence_engine.domain.visual_events.events import GazeDirection, VisualEvent
 
 pytestmark = pytest.mark.contract
@@ -141,22 +146,25 @@ def document(audio: Provenance, video: Provenance) -> EvidenceDocument:
     tokens = [
         WordToken(
             id=TokenId("t-1"),
+            sequence=TokenSequence(window_position_ms=0, index=0),
             raw_text="buenos",
-            interval=Interval.of(0, 400),
+            placement=Timed(Interval.of(0, 400)),
             confidence=Confidence.calibrated(0.55),
             status=TokenStatus.FINAL,
         ),
         WordToken(
             id=TokenId("t-2"),
+            sequence=TokenSequence(window_position_ms=0, index=1),
             raw_text="dias",
-            interval=Interval.of(400, 800),
+            placement=Timed(Interval.of(400, 800)),
             confidence=Confidence.calibrated(0.71),
             status=TokenStatus.FINAL,
         ),
         WordToken(
             id=TokenId("t-3"),
+            sequence=TokenSequence(window_position_ms=0, index=2),
             raw_text="este",
-            interval=Interval.of(6_100, 6_500),
+            placement=Timed(Interval.of(6_100, 6_500)),
             confidence=Confidence.calibrated(0.94),
             status=TokenStatus.FINAL,
         ),

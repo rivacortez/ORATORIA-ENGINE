@@ -52,6 +52,17 @@ class UnavailabilityReason(StrEnum):
     INSUFFICIENT_OBSERVATION = "insufficient_observation"
     #: Raw evidence was deleted under the retention policy (FR-032).
     EVIDENCE_DELETED = "evidence_deleted"
+    #: The recogniser produced the token and no interval for it. The word was
+    #: heard; where it sits on the clock is what is missing. Distinct from
+    #: ``PROCESSING_FAILED``, where nothing was produced at all - pointing a
+    #: reader at a runtime failure when the runtime succeeded sends them to the
+    #: wrong logs.
+    ALIGNMENT_UNAVAILABLE = "alignment_unavailable"
+    #: The model exposes no per-item posterior. Not low confidence, and not a
+    #: failure: the architecture never emitted one. Whisper is the case this
+    #: exists for, and the alternative was a placeholder number a consumer
+    #: could not tell from a real 50% posterior.
+    POSTERIOR_NOT_REPORTED = "posterior_not_reported"
 
 
 @dataclass(frozen=True, slots=True)

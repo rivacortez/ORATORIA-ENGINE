@@ -33,6 +33,7 @@ from evidence_engine.application.ports.runtimes import (
     ProsodyHypothesis,
     SpeechEventHypothesis,
     SpeechResult,
+    TimedWordHypothesis,
     WordHypothesis,
 )
 from evidence_engine.application.services.calibration import Calibrator
@@ -49,7 +50,13 @@ from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventTy
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
-from evidence_engine.domain.transcript.tokens import WordToken
+from evidence_engine.domain.transcript.tokens import (
+    AlignmentUnavailable,
+    Placement,
+    Timed,
+    TokenSequence,
+    WordToken,
+)
 
 #: Classes decided from a recognized word, which therefore need a role. Mirrors
 #: the domain's own set; duplicated here rather than imported because the
@@ -97,7 +104,7 @@ class SpeechAssembler:
     def assemble(self, result: SpeechResult) -> AssembledSpeech:
         provenance = self._provenance(result)
         return AssembledSpeech(
-            tokens=tuple(self._token(word) for word in result.words),
+            tokens=tuple(self._token(word, result.window_position_ms) for word in result.words),
             events=tuple(self._event(hypothesis, provenance) for hypothesis in result.events),
             prosody=tuple(self._prosody(hypothesis, provenance) for hypothesis in result.prosody),
             stable_through_ms=result.stable_through_ms,
@@ -114,11 +121,25 @@ class SpeechAssembler:
             evidence_ref=EvidenceRef(f"audio:{self._run_id.value}"),
         )
 
-    def _token(self, word: WordHypothesis) -> WordToken:
+    def _token(self, word: WordHypothesis, window_position_ms: int) -> WordToken:
+        """One hypothesis becomes one token, whether or not it could be placed.
+
+        Both branches produce a token. The untimed branch used to produce
+        nothing at all, which deleted a recognised word from the authoritative
+        verbatim record for a reason that had nothing to do with what the
+        speaker said.
+        """
+        sequence = TokenSequence(window_position_ms=window_position_ms, index=word.index)
+        placement: Placement = (
+            Timed(Interval.of(word.start_ms, word.end_ms))
+            if isinstance(word, TimedWordHypothesis)
+            else AlignmentUnavailable(reason=word.reason, detail=word.detail)
+        )
         return WordToken(
-            id=TokenId(derive_token_id(self._run_id, word.start_ms, word.raw_text)),
+            id=TokenId(derive_token_id(self._run_id, sequence, word.raw_text)),
+            sequence=sequence,
             raw_text=word.raw_text,
-            interval=Interval.of(word.start_ms, word.end_ms),
+            placement=placement,
             confidence=self._calibrator.calibrate("word", word.score),
         )
 

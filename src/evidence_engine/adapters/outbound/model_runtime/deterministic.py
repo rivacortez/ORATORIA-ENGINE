@@ -29,11 +29,11 @@ from evidence_engine.application.ports.runtimes import (
     ProsodyHypothesis,
     SpeechEventHypothesis,
     SpeechResult,
+    TimedWordHypothesis,
     VisualEventHypothesis,
     VisualFrame,
     VisualQualitySignal,
     VisualResult,
-    WordHypothesis,
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.taxonomy import (
@@ -121,14 +121,22 @@ class DeterministicSpeechRuntime:
         active_from_ms = self._stable_ms
 
         words = tuple(
-            WordHypothesis(
+            # Always timed. A scripted runtime asserts what it hears, and a
+            # script that omitted a boundary would be describing an aligner
+            # failure rather than a speaker - the untimed case belongs to the
+            # adapters that wrap a real recogniser.
+            TimedWordHypothesis(
                 raw_text=word.text,
                 start_ms=word.start_ms,
                 end_ms=word.end_ms,
                 score=word.score,
+                index=index,
             )
-            for word in self._script.words
-            if word.end_ms > active_from_ms and word.start_ms < window_end_ms
+            for index, word in enumerate(
+                word
+                for word in self._script.words
+                if word.end_ms > active_from_ms and word.start_ms < window_end_ms
+            )
         )
         events = tuple(
             SpeechEventHypothesis(
@@ -148,6 +156,7 @@ class DeterministicSpeechRuntime:
 
         return SpeechResult(
             model_version=self._script.model_version,
+            window_position_ms=window.session_position_ms,
             words=words,
             events=events,
             prosody=self._prosody(window.session_position_ms, window_end_ms),

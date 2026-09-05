@@ -35,9 +35,12 @@ from typing import Any
 from evidence_engine.application.ports.runtimes import (
     AudioWindow,
     SpeechResult,
+    TimedWordHypothesis,
+    UntimedWordHypothesis,
     WordHypothesis,
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
+from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
 
 #: The artifact `BASELINE_PINS.md` pins, by identifier and revision. Hard-coded
 #: rather than configurable: a runtime whose checkpoint is a deployment setting
@@ -188,23 +191,10 @@ class WhisperSpeechRuntime:
             generate_kwargs=dict(PINNED_DECODING),
         )
 
-        words = tuple(
-            WordHypothesis(
-                raw_text=text,
-                start_ms=window.session_position_ms + int(start * 1000),
-                end_ms=window.session_position_ms + int(end * 1000),
-                # Whisper exposes no per-word posterior. 1.0 would assert a
-                # certainty it never expressed, so the score is the neutral
-                # value and the calibrator - which has no curve for it - turns
-                # it into a RAW confidence that opens no publication gate.
-                score=_NO_REPORTED_POSTERIOR,
-            )
-            for text, start, end in self._chunks(output)
-        )
-
         return SpeechResult(
             model_version=self.model_version,
-            words=words,
+            window_position_ms=window.session_position_ms,
+            words=self.words_from(output, window.session_position_ms),
             events=(),
             prosody=(),
             # The whole window. Whisper decodes a window in one pass and has no
@@ -220,27 +210,77 @@ class WhisperSpeechRuntime:
         return np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0
 
     @staticmethod
-    def _chunks(output: Any) -> list[tuple[str, float, float]]:
-        """The pipeline's word chunks, with the unusable ones dropped.
+    def words_from(output: Any, session_position_ms: int) -> tuple[WordHypothesis, ...]:
+        """Every word the pipeline reported, placed on the session clock or not.
 
-        A chunk can carry ``None`` for either bound when the alignment fails on
-        a fragment. Such a word has no position, and a word with no position
-        cannot be placed on the session clock - so it is dropped rather than
-        given a guessed boundary that every downstream interval would inherit.
+        A static method taking the raw output rather than a private helper,
+        because this is where both of the adapter's judgement calls live and
+        neither was testable while they were buried behind a GPU and a 3 GB
+        download.
+
+        **A word whose alignment failed is kept.** The pipeline returns ``None``
+        for a bound when the alignment heads cannot place a fragment. Refusing
+        to invent the boundary is right; deleting the word is not - what is
+        unknown is where it was, not whether it was said. Dropping it produced
+        a transcript one word shorter that nothing downstream could detect.
+
+        **A word with one bound is untimed too.** Half an interval is not an
+        interval, and keeping the half that arrived means inventing the other.
+
+        The offsets are relative to the window; sessions run for minutes. A
+        window at 60 s carrying a word at 0.4 s is a word at 60.4 s of the
+        session, and getting that wrong shifts every interval and every
+        co-occurrence by the window position while the text still reads
+        correctly.
         """
-        usable: list[tuple[str, float, float]] = []
+        words: list[WordHypothesis] = []
+        # `index` is the emission order, assigned over the chunks that
+        # become words. Counting dropped blanks instead would make the index
+        # depend on how many empty chunks the decoder happened to emit, and
+        # every token id would churn between passes.
         for chunk in output.get("chunks", ()):
-            start, end = chunk.get("timestamp", (None, None))
             text = str(chunk.get("text", "")).strip()
-            if start is None or end is None or not text:
+            if not text:
+                # Not a word missing its timing - not a word. `WordToken`
+                # refuses empty text on the grounds that an unintelligible
+                # stretch is an UNINTELLIGIBLE event rather than a blank word,
+                # so admitting one here would only move the failure later.
                 continue
-            usable.append((text, float(start), float(end)))
-        return usable
+
+            start, end = chunk.get("timestamp", (None, None))
+            if start is None or end is None:
+                words.append(
+                    UntimedWordHypothesis(
+                        raw_text=text,
+                        score=NO_REPORTED_POSTERIOR,
+                        index=len(words),
+                        detail="the checkpoint's alignment heads returned no interval",
+                    )
+                )
+                continue
+
+            words.append(
+                TimedWordHypothesis(
+                    raw_text=text,
+                    start_ms=session_position_ms + int(float(start) * 1000),
+                    end_ms=session_position_ms + int(float(end) * 1000),
+                    score=NO_REPORTED_POSTERIOR,
+                    index=len(words),
+                )
+            )
+        return tuple(words)
 
 
-#: Whisper reports no per-word posterior. Chosen rather than 1.0, which would
-#: assert a certainty the model never expressed, and rather than 0.0, which
-#: would read as a rejection. The calibrator has no curve for `word`, so this
-#: becomes a RAW confidence either way - the value matters only if somebody
-#: later fits one, and at that point a neutral prior is the honest input.
-_NO_REPORTED_POSTERIOR = 0.5
+#: Whisper exposes no per-word posterior, and this says so rather than standing
+#: in for one.
+#:
+#: It used to be the float `0.5`, defended in a comment as "the neutral value"
+#: - not 1.0, which would assert unearned certainty, and not 0.0, which reads
+#: as a rejection. The reasoning was sound and the conclusion was still wrong:
+#: a consumer reading a number cannot tell a neutral placeholder from a genuine
+#: 50% posterior, and FR-025 exists precisely so the two never look alike. The
+#: honest answer was not a better number. It was that there is no number.
+NO_REPORTED_POSTERIOR = Unavailable(
+    reason=UnavailabilityReason.POSTERIOR_NOT_REPORTED,
+    detail="whisper-large-v3 emits no per-word posterior",
+)

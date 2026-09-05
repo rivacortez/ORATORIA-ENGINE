@@ -45,7 +45,9 @@ from evidence_engine.application.services.visual_assembly import VisualAssembler
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
 from evidence_engine.domain.quality.assessment import ModalityAvailability, QualityReport
 from evidence_engine.domain.sessions.sequencing import ChunkLedger, ChunkVerdict
+from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.identifiers import RunId, SessionId
+from evidence_engine.domain.shared.measurement import Unavailable
 from evidence_engine.domain.shared.provenance import Modality, Provenance
 from evidence_engine.domain.shared.timeline import MonotonicTime
 from evidence_engine.domain.speech_events.events import SpeechEvent
@@ -163,12 +165,30 @@ class StreamingCoordinator:
         return verdict
 
     async def _finalize_through(self, stable_through_ms: int) -> None:
-        """Freeze everything the runtime considers settled (§6.1 step 9)."""
-        if stable_through_ms <= self._state.transcript.finalized_frontier.ms:
+        """Freeze everything the runtime considers settled (§6.1 step 9).
+
+        Two frontiers move, because the transcript has two orders. The time
+        frontier freezes placed tokens whose interval has closed. The sequence
+        frontier freezes everything the committed audio produced - including
+        words the aligner could not place, which have no interval to compare
+        and would otherwise stay provisional for the whole session.
+
+        The sequence boundary is the largest sequence among tokens the time
+        boundary just settled, and it is stated rather than inferred from a
+        neighbour: an unplaced word is finalized because the coordinator
+        committed the audio it came from, never because the word next to it
+        happens to be stable. That distinction is the difference between a
+        decision and a guess.
+        """
+        if stable_through_ms <= self._state.transcript.finalized_time_frontier.ms:
             return
 
         boundary = MonotonicTime(stable_through_ms)
-        self._state.transcript = self._state.transcript.finalize_through(boundary)
+        transcript = self._state.transcript.finalize_through_time(boundary)
+        settled = [t.sequence for t in transcript.tokens if t.is_timed and t.is_final]
+        if settled:
+            transcript = transcript.finalize_through_sequence(max(settled))
+        self._state.transcript = transcript
 
         newly_final: list[SpeechEvent] = []
         for key, event in list(self._state.speech_events.items()):
@@ -249,7 +269,7 @@ class StreamingCoordinator:
             OutboundEvent(
                 type=ServerMessageType.PROCESSING_DEGRADED,
                 session_id=self._state.session_id,
-                monotonic_time_ms=self._state.transcript.finalized_frontier.ms,
+                monotonic_time_ms=self._state.transcript.finalized_time_frontier.ms,
                 payload={
                     "modality": notice.modality.value,
                     "reason": notice.reason,
@@ -351,8 +371,7 @@ class StreamingCoordinator:
                             "start_ms": token.interval.start.ms,
                             "end_ms": token.interval.end.ms,
                             "tolerance_ms": token.interval.tolerance_ms,
-                            "confidence": token.confidence.value,
-                            "calibration": token.confidence.state.value,
+                            **_token_confidence(token.confidence),
                         }
                         for token in tokens
                     ]
@@ -390,7 +409,7 @@ class StreamingCoordinator:
             OutboundEvent(
                 type=ServerMessageType.QUALITY_WARNING,
                 session_id=self._state.session_id,
-                monotonic_time_ms=self._state.transcript.finalized_frontier.ms,
+                monotonic_time_ms=self._state.transcript.finalized_time_frontier.ms,
                 payload={
                     "windows": [
                         {
@@ -431,4 +450,25 @@ def _speech_payload(event: SpeechEvent) -> dict[str, object]:
         "model_version": event.provenance.model_version.value,
         "taxonomy_version": str(event.provenance.taxonomy_version),
         "evidence_ref": event.provenance.evidence_ref.value,
+    }
+
+
+def _token_confidence(confidence: Confidence | Unavailable) -> dict[str, object]:
+    """The live-wire twin of the REST serializer's rule.
+
+    §7.4 requires the streaming and REST shapes to agree, and both must keep
+    the unavailable case out of a numeric field: `"confidence": null` is what a
+    chart turns into zero, and the recogniser never claimed the word scored
+    zero.
+    """
+    if isinstance(confidence, Unavailable):
+        return {
+            "confidence_available": False,
+            "confidence_unavailable_reason": confidence.reason.value,
+            "confidence_unavailable_detail": confidence.detail,
+        }
+    return {
+        "confidence_available": True,
+        "confidence": confidence.value,
+        "calibration": confidence.state.value,
     }

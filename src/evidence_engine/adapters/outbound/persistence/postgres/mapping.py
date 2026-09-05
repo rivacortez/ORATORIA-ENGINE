@@ -58,7 +58,14 @@ from evidence_engine.domain.shared.taxonomy import (
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
-from evidence_engine.domain.transcript.tokens import TokenStatus, WordToken
+from evidence_engine.domain.transcript.tokens import (
+    AlignmentUnavailable,
+    Placement,
+    Timed,
+    TokenSequence,
+    TokenStatus,
+    WordToken,
+)
 from evidence_engine.domain.visual_events.events import GazeDirection, VisualEvent
 
 # ---------------------------------------------------------------------------
@@ -165,21 +172,98 @@ def token_to_row(token: WordToken, run_id: str, tenant: TenantId) -> models.Word
         run_id=run_id,
         tenant_id=tenant.value,
         raw_text=token.raw_text,
-        start_ms=token.interval.start.ms,
-        end_ms=token.interval.end.ms,
-        tolerance_ms=token.interval.tolerance_ms,
-        confidence=token.confidence.value,
-        calibration=token.confidence.state.value,
+        sequence_window_ms=token.sequence.window_position_ms,
+        sequence_index=token.sequence.index,
+        **_placement_columns(token.placement),
+        **_confidence_columns(token.confidence),
         status=token.status.value,
     )
 
 
+def _placement_columns(placement: Placement) -> dict[str, object]:
+    """The two mutually exclusive shapes a stored placement can take."""
+    if isinstance(placement, Timed):
+        return {
+            "start_ms": placement.interval.start.ms,
+            "end_ms": placement.interval.end.ms,
+            "tolerance_ms": placement.interval.tolerance_ms,
+            "placement_unavailable_reason": None,
+            "placement_unavailable_detail": "",
+        }
+    return {
+        "start_ms": None,
+        "end_ms": None,
+        "tolerance_ms": None,
+        "placement_unavailable_reason": placement.reason.value,
+        "placement_unavailable_detail": placement.detail,
+    }
+
+
+def _placement_from(row: models.WordTokenRow) -> Placement:
+    """Read back whichever state was stored.
+
+    Branches on the reason rather than on the nullability of ``start_ms``, for
+    the same argument as ``_confidence_from``: the check constraint guarantees
+    exactly one shape, and reading the discriminator means a relaxed constraint
+    would surface as a loud assertion rather than as an interval built from
+    None.
+    """
+    if row.placement_unavailable_reason is not None:
+        return AlignmentUnavailable(
+            reason=UnavailabilityReason(row.placement_unavailable_reason),
+            detail=row.placement_unavailable_detail,
+        )
+    assert row.start_ms is not None
+    assert row.end_ms is not None
+    assert row.tolerance_ms is not None
+    return Timed(Interval.of(row.start_ms, row.end_ms, row.tolerance_ms))
+
+
+def _confidence_columns(confidence: Confidence | Unavailable) -> dict[str, object]:
+    """The two mutually exclusive shapes a stored confidence can take."""
+    if isinstance(confidence, Unavailable):
+        return {
+            "confidence": None,
+            "calibration": None,
+            "confidence_unavailable_reason": confidence.reason.value,
+            "confidence_unavailable_detail": confidence.detail,
+        }
+    return {
+        "confidence": confidence.value,
+        "calibration": confidence.state.value,
+        "confidence_unavailable_reason": None,
+        "confidence_unavailable_detail": "",
+    }
+
+
+def _confidence_from(row: models.WordTokenRow) -> Confidence | Unavailable:
+    """Read back whichever state was stored.
+
+    The reason column decides, not the nullability of the score: the check
+    constraint guarantees exactly one of the two shapes, so branching on the
+    reason cannot produce a `Confidence(None)` if a future migration relaxes
+    something.
+    """
+    if row.confidence_unavailable_reason is not None:
+        return Unavailable(
+            reason=UnavailabilityReason(row.confidence_unavailable_reason),
+            detail=row.confidence_unavailable_detail,
+        )
+    # Both are non-null here by `ck_token_confidence_exactly_one_state`. The
+    # asserts state that for the type checker and would fire loudly rather than
+    # constructing a Confidence from None if the constraint were ever dropped.
+    assert row.confidence is not None
+    assert row.calibration is not None
+    return Confidence(row.confidence, CalibrationState(row.calibration))
+
+
 def row_to_token(row: models.WordTokenRow) -> WordToken:
     return WordToken(
+        sequence=TokenSequence(window_position_ms=row.sequence_window_ms, index=row.sequence_index),
+        placement=_placement_from(row),
         id=TokenId(row.id),
         raw_text=row.raw_text,
-        interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
-        confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
+        confidence=_confidence_from(row),
         status=TokenStatus(row.status),
     )
 
