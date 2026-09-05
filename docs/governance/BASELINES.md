@@ -76,11 +76,29 @@ not. Abstention rate is reported alongside precision, so the trade is visible.
 
 - **Speaker-independent.** No speaker appears in more than one partition. This
   is the single most common way a speech result becomes meaningless, and the
-  check is mechanical rather than a matter of care.
+  check is mechanical rather than a matter of care: `corpus split` assigns
+  *speakers*, never recordings, so a speaker cannot straddle a boundary by
+  construction - and re-derives the guarantee anyway, because a construction
+  survives exactly until the refactor that changes it and a model scored on
+  speakers it memorised does not look broken, it looks good.
 - The **held-out set is frozen** at the end of Phase 1 and is not touched
-  during tuning. §14.4 makes this a scientific gate.
+  during tuning. §14.4 makes this a scientific gate, and `corpus split
+  --freeze` makes it checkable: the manifest carries a SHA-256 per annotation
+  file and a digest over the whole assignment, so `corpus verify` answers
+  months later whether this is the held-out set a number was computed over,
+  whether any file changed, and whether anything was added or moved. A gate
+  enforced by everyone remembering is not a gate - the failure it exists to
+  prevent looks exactly like ordinary work while it happens.
 - Dataset cards record provenance, consent basis, recording conditions and
-  partition checksums.
+  partition checksums. The manifest is the machine-readable half; the half a
+  human writes - why these speakers, under what consent, in what room - is
+  prose and belongs beside it.
+- **Partitions are stratified, not random.** On a corpus of tens of speakers
+  with nine classes, random assignment routinely lands zero instances of a rare
+  class in held-out, and its per-class F1 is then *undefined* - a missing
+  measurement that reads as a low score. `corpus split` places the speakers
+  carrying the rarest classes first, and refuses to freeze a plan where a P0
+  class is missing from any partition.
 
 ## 5. Results
 

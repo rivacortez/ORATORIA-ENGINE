@@ -37,6 +37,7 @@ Stated up front because most of the design exists to keep these out:
 | ----------- | -------------------------------------------------------- | -------------------------------------------------------------- |
 | 0           | Scope, taxonomy, annotation manual, consent policy, ADRs | **deliverables done; exit criterion not met** — see below                                                       |
 | 0.5         | Experimental closure of the **speech** taxonomy          | **tooling done; pilots not run** — visual half deferred to Phase 5      |
+| 1           | Corpus construction                                      | **tooling done; nothing recorded** — inventory, speaker-independent split, held-out freeze |
 | 2           | Platform skeleton and contracts                          | **done, exit criterion proven**                                |
 | 3           | Verbatim speech baseline                                 | not started                                                    |
 | 4           | Disfluency and prosody intelligence                      | not started                                                    |

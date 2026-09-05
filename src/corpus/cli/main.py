@@ -1,13 +1,23 @@
 """``corpus`` — the annotators' and the methodologist's command line.
 
-Three verbs, matching the three things that actually happen during a pilot:
-hand an annotator a file, check what came back, and measure two of them against
-each other.
+Six verbs, in the order the work happens.
+
+*During the pilots (Phase 0.5).* ``template`` hands an annotator a file,
+``validate`` checks what came back, ``agreement`` measures two of them against
+each other and lists what has to be adjudicated.
+
+*While building the corpus (Phase 1).* ``inventory`` says whether there is
+enough of each class from enough different speakers to carry a per-class
+figure, and exits non-zero while there is not - it is the command a recording
+schedule is driven by. ``split`` assigns speakers to train/dev/held-out
+speaker-independently and, with ``--freeze``, writes the manifest that makes
+§14.4's gate checkable. ``verify`` answers, months later, whether the held-out
+set is still the one a number was computed over.
 
 Output is plain text on stdout and machine-readable JSON behind ``--json``.
 Both, because the same numbers are read two ways: a methodologist reads them
-during the pilot, and the disagreement log needs them in a form that can be
-committed and diffed between manual versions.
+during the pilot, and the disagreement log and the dataset card need them in a
+form that can be committed and diffed.
 """
 
 from __future__ import annotations
@@ -34,7 +44,14 @@ from corpus.agreement.report import (
     compare,
 )
 from corpus.io.elan import ElanError, read, write_template
-from corpus.schema.records import AnnotationPass
+from corpus.partition.freeze import freeze, from_json, to_json, verify
+from corpus.partition.inventory import (
+    DEFAULT_MINIMUM_INSTANCES,
+    DEFAULT_MINIMUM_SPEAKERS,
+    inventory,
+)
+from corpus.partition.split import split
+from corpus.schema.records import AnnotatedRecording, AnnotationPass
 from corpus.schema.validation import validate
 
 
@@ -127,6 +144,44 @@ def _parser() -> argparse.ArgumentParser:
     agreement.add_argument("--json", action="store_true", dest="as_json")
     agreement.set_defaults(handler=_agreement)
 
+    stock = subcommands.add_parser(
+        "inventory",
+        help="count the corpus by class and by speaker, and say whether it is enough",
+    )
+    stock.add_argument("files", nargs="+", type=Path)
+    stock.add_argument("--min-instances", type=int, default=DEFAULT_MINIMUM_INSTANCES)
+    stock.add_argument(
+        "--min-speakers",
+        type=int,
+        default=DEFAULT_MINIMUM_SPEAKERS,
+        help="a class from too few speakers is one person's habit, not evidence",
+    )
+    stock.add_argument("--json", action="store_true", dest="as_json")
+    stock.set_defaults(handler=_inventory)
+
+    partition = subcommands.add_parser(
+        "split", help="assign speakers to train/dev/held-out, speaker-independently"
+    )
+    partition.add_argument("files", nargs="+", type=Path)
+    partition.add_argument("--seed", type=int, default=0)
+    partition.add_argument("--json", action="store_true", dest="as_json")
+    partition.add_argument(
+        "--freeze",
+        type=Path,
+        metavar="MANIFEST",
+        help="write the manifest that makes the held-out set checkable (§14.4)",
+    )
+    partition.add_argument("--force", action="store_true", help="overwrite the manifest")
+    partition.set_defaults(handler=_split)
+
+    check_freeze = subcommands.add_parser(
+        "verify", help="check a frozen corpus against the files on disk"
+    )
+    check_freeze.add_argument("manifest", type=Path)
+    check_freeze.add_argument("files", nargs="+", type=Path)
+    check_freeze.add_argument("--json", action="store_true", dest="as_json")
+    check_freeze.set_defaults(handler=_verify)
+
     return parser
 
 
@@ -203,6 +258,192 @@ def _agreement(args: argparse.Namespace) -> int:
     else:
         _print_report(report)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Corpus construction
+# ---------------------------------------------------------------------------
+
+
+def _read_all(paths: Sequence[Path]) -> tuple[list[AnnotatedRecording], dict[str, Path]]:
+    """Every file, with the path each recording came from.
+
+    The paths travel alongside the records because the freeze digests the bytes
+    on disk, not the parsed record: a re-export that changes formatting without
+    changing meaning should still be visible, and only the file can show that.
+    """
+    records: list[AnnotatedRecording] = []
+    sources: dict[str, Path] = {}
+    for path in paths:
+        record = read(path)
+        records.append(record)
+        sources[record.recording_id] = path
+    return records, sources
+
+
+def _inventory(args: argparse.Namespace) -> int:
+    records, _ = _read_all(args.files)
+    corpus = inventory(records)
+    verdicts = corpus.adequacy(
+        minimum_instances=args.min_instances, minimum_speakers=args.min_speakers
+    )
+
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "recordings": corpus.recording_count,
+                    "speakers": corpus.speaker_count,
+                    "total_duration_ms": corpus.total_duration_ms,
+                    "events": corpus.event_count,
+                    "minimum_instances": args.min_instances,
+                    "minimum_speakers": args.min_speakers,
+                    "classes": [
+                        {
+                            "event_type": verdict.event_type,
+                            "instances": verdict.instances,
+                            "speakers": verdict.speakers,
+                            "adequate": verdict.is_adequate,
+                            "shortfall": verdict.shortfall,
+                        }
+                        for verdict in verdicts
+                    ],
+                    "adequate": all(v.is_adequate for v in verdicts),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(
+            f"\n{corpus.recording_count} recording(s), {corpus.speaker_count} speaker(s), "
+            f"{corpus.event_count} annotated event(s)"
+        )
+        print(
+            f"  a class needs {args.min_instances} instance(s) from "
+            f"{args.min_speakers} speaker(s) to carry a per-class figure\n"
+        )
+        for verdict in verdicts:
+            mark = "ok" if verdict.is_adequate else "SHORT"
+            print(
+                f"  {mark:<5} {verdict.event_type:<16} "
+                f"{verdict.instances:>5} instance(s)  {verdict.speakers:>3} speaker(s)"
+                + (f"   needs {verdict.shortfall}" if verdict.shortfall else "")
+            )
+
+    # Non-zero while the corpus is short. This is the command a recording
+    # schedule is driven by, so "keep going" has to be machine-readable.
+    return 0 if all(v.is_adequate for v in verdicts) else 1
+
+
+def _split(args: argparse.Namespace) -> int:
+    records, sources = _read_all(args.files)
+    plan = split(inventory(records), seed=args.seed)
+
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "seed": plan.seed,
+                    "shares": dict(plan.shares),
+                    "partitions": [
+                        {
+                            "partition": contents.partition.value,
+                            "speakers": list(contents.speakers),
+                            "recordings": list(contents.recording_ids),
+                            "duration_ms": contents.duration_ms,
+                            "class_counts": dict(contents.class_counts),
+                        }
+                        for contents in plan.partitions
+                    ],
+                    "usable": plan.is_usable,
+                    "findings": [
+                        {
+                            "severity": finding.severity.value,
+                            "code": finding.code,
+                            "message": finding.message,
+                        }
+                        for finding in plan.findings
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"\nspeaker-independent split, seed {plan.seed}")
+        for contents in plan.partitions:
+            print(
+                f"\n  {contents.partition.value:<9} "
+                f"{contents.speaker_count:>3} speaker(s)  "
+                f"{len(contents.recording_ids):>3} recording(s)"
+            )
+            print(f"    {', '.join(contents.speakers) or '(none)'}")
+            for event_type, count in contents.class_counts.items():
+                print(f"      {event_type:<16} {count:>5}")
+        for finding in plan.findings:
+            print(f"\n  {finding}")
+
+    if not plan.is_usable:
+        print(
+            "\nrefusing to freeze an unusable split: a partition missing a P0 class has "
+            "an undefined per-class figure there, and an undefined figure reads as a "
+            "low score while being a missing measurement.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.freeze:
+        if args.freeze.exists() and not args.force:
+            print(
+                f"refused: {args.freeze} already exists. Re-freezing a corpus after "
+                "seeing a result is the failure the manifest exists to make visible; "
+                "pass --force if the first freeze was a mistake.",
+                file=sys.stderr,
+            )
+            return 1
+        manifest = freeze(plan, records, sources)
+        args.freeze.write_text(to_json(manifest), encoding="utf-8")
+        print(f"\nfrozen: {args.freeze}")
+        print(f"  digest {manifest.digest}")
+        print(f"  {len(manifest.recordings)} recording(s) over {len(manifest.speakers)} speaker(s)")
+    return 0
+
+
+def _verify(args: argparse.Namespace) -> int:
+    manifest = from_json(args.manifest.read_text(encoding="utf-8"))
+    _, sources = _read_all(args.files)
+    findings = verify(manifest, sources)
+
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "manifest": str(args.manifest),
+                    "digest": manifest.digest,
+                    "verified": not findings,
+                    "findings": [
+                        {
+                            "severity": finding.severity.value,
+                            "code": finding.code,
+                            "message": finding.message,
+                        }
+                        for finding in findings
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    elif not findings:
+        print(f"\nverified: {len(manifest.recordings)} recording(s) unchanged since the freeze")
+        print(f"  digest {manifest.digest}")
+    else:
+        print(f"\n{len(findings)} problem(s) with the frozen corpus:")
+        for finding in findings:
+            print(f"  {finding}")
+
+    return 0 if not findings else 1
 
 
 def _as_dict(report: AgreementReport) -> dict[str, Any]:
