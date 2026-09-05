@@ -37,7 +37,7 @@ One command, once the extras are installed. It records a presentation, runs the
 pinned checkpoint over it, and prints what the engine derived.
 
 ```bash
-uv sync --extra managed --extra record
+uv sync --extra local --extra record
 
 # torch is installed separately, from the wheel index your card needs. This
 # workstation is a Blackwell (sm_120) and needs cu130; check yours before

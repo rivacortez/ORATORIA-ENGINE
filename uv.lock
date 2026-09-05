@@ -2200,7 +2200,31 @@ wheels = [
 name = "oratoria-evidence-engine"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "httpx2" },
+    { name = "import-linter" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "types-aioboto3" },
+]
+local = [
+    { name = "accelerate" },
+    { name = "librosa" },
+    { name = "numpy" },
+    { name = "soundfile" },
+    { name = "transformers" },
+]
+record = [
+    { name = "sounddevice" },
+    { name = "soundfile" },
+]
+server = [
     { name = "aioboto3" },
     { name = "alembic" },
     { name = "asyncpg" },
@@ -2216,63 +2240,39 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "httpx2" },
-    { name = "import-linter" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "types-aioboto3" },
-]
-managed = [
-    { name = "accelerate" },
-    { name = "librosa" },
-    { name = "numpy" },
-    { name = "soundfile" },
-    { name = "transformers" },
-]
-record = [
-    { name = "sounddevice" },
-    { name = "soundfile" },
-]
-
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", marker = "extra == 'managed'", specifier = ">=0.26" },
-    { name = "aioboto3", specifier = ">=13.2" },
-    { name = "alembic", specifier = ">=1.14" },
-    { name = "asyncpg", specifier = ">=0.30" },
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "accelerate", marker = "extra == 'local'", specifier = ">=0.26" },
+    { name = "aioboto3", marker = "extra == 'server'", specifier = ">=13.2" },
+    { name = "alembic", marker = "extra == 'server'", specifier = ">=1.14" },
+    { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.30" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.12" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
-    { name = "librosa", marker = "extra == 'managed'", specifier = ">=0.10" },
+    { name = "librosa", marker = "extra == 'local'", specifier = ">=0.10" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
-    { name = "numpy", marker = "extra == 'managed'", specifier = ">=1.26" },
-    { name = "opentelemetry-api", specifier = ">=1.28" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.49b0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.28" },
-    { name = "pydantic", specifier = ">=2.9" },
-    { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "numpy", marker = "extra == 'local'", specifier = ">=1.26" },
+    { name = "opentelemetry-api", marker = "extra == 'server'", specifier = ">=1.28" },
+    { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'server'", specifier = ">=0.49b0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'server'", specifier = ">=1.28" },
+    { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.9" },
+    { name = "pydantic-settings", marker = "extra == 'server'", specifier = ">=2.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "redis", specifier = ">=5.2" },
+    { name = "redis", marker = "extra == 'server'", specifier = ">=5.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "sounddevice", marker = "extra == 'record'", specifier = ">=0.4" },
-    { name = "soundfile", marker = "extra == 'managed'", specifier = ">=0.12" },
+    { name = "soundfile", marker = "extra == 'local'", specifier = ">=0.12" },
     { name = "soundfile", marker = "extra == 'record'", specifier = ">=0.12" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
-    { name = "structlog", specifier = ">=24.4" },
-    { name = "transformers", marker = "extra == 'managed'", specifier = "==4.57.6" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = ">=2.0.36" },
+    { name = "structlog", marker = "extra == 'server'", specifier = ">=24.4" },
+    { name = "transformers", marker = "extra == 'local'", specifier = "==4.57.6" },
     { name = "types-aioboto3", marker = "extra == 'dev'", specifier = ">=13.2" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.32" },
 ]
-provides-extras = ["managed", "record", "dev"]
+provides-extras = ["server", "local", "research", "record", "dev"]
 
 [[package]]
 name = "packaging"

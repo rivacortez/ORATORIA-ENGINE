@@ -6,7 +6,28 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 
-dependencies = [
+# **Empty, and that is the point.**
+#
+# `domain/` imports nothing but the standard library and `application/`
+# imports no third party at all - C2 and C3 have enforced that since the
+# project started. What was never enforced was the *distribution*: the base
+# dependency list carried FastAPI, SQLAlchemy, asyncpg, Redis, aioboto3 and
+# OpenTelemetry, so `pip install oratoria-evidence-engine` installed a server
+# and its whole infrastructure stack to get at a package that needs neither.
+#
+# A consumer embedding the engine - the case ADR-001 exists for - was paying
+# for a web framework and a database driver to read a taxonomy. Now the core
+# installs alone and every runtime concern is opt-in. C9 checks this against
+# the built wheel rather than against this file, because a dependency can be
+# declared correctly here and still be dragged in transitively.
+dependencies = []
+
+[project.optional-dependencies]
+# The hosted service: REST, WebSocket, PostgreSQL, Redis, object storage,
+# telemetry. Everything that makes the engine a *deployment* rather than a
+# library. `evidence_engine.bootstrap` refuses to import without it and says
+# so (see `evidence_engine._extras`).
+server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
@@ -21,23 +42,27 @@ dependencies = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-instrumentation-fastapi>=0.49b0",
 ]
-
-[project.optional-dependencies]
-# The managed speech runtime. Deliberately not a dependency: the deployable
-# service must install and run without a machine-learning stack, and only the
-# machine that actually decodes audio needs this.
+# Local inference: the pinned research baseline running on the consumer's own
+# hardware. Renamed from `managed`, which said nothing about what it loads -
+# see `RuntimeMode` for why that name did damage.
 #
-# torch is NOT pinned here to a CUDA build. The wheel index depends on the
-# card - this project's workstation is a Blackwell (sm_120) and needs cu130 -
-# and `BASELINE_PINS.md` records that the executable environment is a Phase 3
-# freeze. Install torch first, from the index your card needs, then this extra.
-managed = [
+# torch is NOT here, and must not be. The wheel index depends on the card
+# - this project's workstation is a Blackwell (sm_120) and needs cu130 - and
+# `uv sync --extra local` would resolve the CPU build from PyPI and silently
+# replace a working CUDA install. That has happened on this machine. Install
+# torch first, from the index your card needs, then this extra.
+local = [
     "transformers==4.57.6",
     "accelerate>=0.26",
     "numpy>=1.26",
     "soundfile>=0.12",
     "librosa>=0.10",
 ]
+# Corpus construction, annotation and agreement. Deliberately empty: the whole
+# of `src/corpus` imports nothing but the standard library, which is worth
+# knowing rather than worth hiding. Declared anyway so the install line is
+# stable when the evaluation work needs a statistics package.
+research = []
 # Recording a presentation from a microphone, for the pilot and for anybody
 # who wants to hear what the engine hears.
 record = [
@@ -142,8 +167,8 @@ mypy_path = "src"
 packages = ["evidence_engine", "corpus"]
 
 [[tool.mypy.overrides]]
-# The managed runtime's stack. Optional extras rather than dependencies - the
-# service deploys without a 3 GB machine-learning install - so mypy will not
+# The local runtime's stack. An optional extra rather than a dependency - the
+# core installs with nothing at all - so mypy will not
 # find them in the default environment and must not fail the gate for it. The
 # adapter imports them inside a function and re-raises with an install command,
 # which is the behaviour these overrides exist to permit.
@@ -179,6 +204,11 @@ markers = [
     "integration: requires postgres/redis/object storage",
     "contract: validates the published REST/WebSocket contract",
     "invariant: guards a rule whose violation invalidates the service",
+    # C9. Builds a wheel and creates a virtual environment, so it costs
+    # seconds rather than milliseconds. Deselect it locally with
+    # `-m "not distribution"`; the evidence battery runs it, because the
+    # claim it defends is one of the two ADR-001 rests on.
+    "distribution: builds and installs the wheel in a clean environment",
 ]
 
 [tool.coverage.run]

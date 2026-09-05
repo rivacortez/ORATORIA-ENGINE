@@ -357,6 +357,59 @@ emitted list beside a populated unavailable list is the difference between "the
 speaker had no disfluencies" and "nothing here looks for disfluencies", and
 those rendered identically before.
 
+### 3.16 The engine is an embeddable SDK first and a hosted service second
+
+**Decision.** One repository, one Python wheel, four extras. The core installs
+with **no dependencies at all**; `server`, `local`, `record` and `research` are
+opt-in. A TypeScript SDK will be a separate npm distribution living in the same
+repository.
+
+**Why one repository and not four.** The separation between core, SDK and
+server is right; splitting it across repositories is the wrong mechanism for
+it. The boundary between layers is currently checked by a machine - eight
+import-linter contracts that fail CI before a claim reaches a reader - and a
+second repository would replace that with a version constraint in a
+`pyproject.toml`, which nobody breaks the build over when they relax it. It
+also buys four CI pipelines and turns a refactor across the boundary into two
+pull requests and an intermediate release. For a thesis that is weeks.
+
+**What made it cheap.** The core was already extracted and nobody had noticed:
+`domain/` imports only the standard library, `application/` imports no third
+party at all, and C2 and C3 have enforced that from the start. The whole change
+was moving thirteen dependencies into an extra and finding what broke. Nothing
+did.
+
+**What it fixes.** `pip install oratoria-evidence-engine` installed FastAPI,
+uvicorn, SQLAlchemy, asyncpg, Alembic, Redis, aioboto3 and OpenTelemetry - a
+web framework and a database driver, to read a taxonomy. ADR-001's claim that
+this is an independent, embeddable engine was false at the level a consumer
+actually meets it.
+
+### 3.17 C9 is a distribution contract, not an import contract
+
+**Decision.** C9 builds the wheel, reads `METADATA`, installs the base wheel
+into an empty virtual environment, imports the core, and asserts that no
+server or ML module was loaded as a side effect.
+
+**Why it is not in `.importlinter`.** import-linter reads the source tree. The
+gap it cannot see is exactly the one that existed for the whole project: the
+layers were provably clean while the dependency list carried the entire server
+stack. A contract that read `pyproject.toml` would be better and still
+insufficient - a dependency can be declared correctly and arrive transitively.
+The only statement worth making is about the artefact a consumer installs.
+
+**What it costs.** Seconds, because it builds a wheel and creates a virtual
+environment. Marked `distribution` so it can be deselected locally; the
+evidence battery runs it, because a check this expensive is precisely the kind
+that rots when nobody runs it.
+
+**The refusal is part of the contract.** Reaching for `evidence_engine.bootstrap`
+without the `server` extra raises `MissingExtra` naming the extra and the
+install line, and saying it is not a broken install. Without that, making the
+core light would cost a consumer more than it saved: `ModuleNotFoundError: No
+module named 'fastapi'` from inside a composition root names a package rather
+than a capability.
+
 ---
 
 ## 4. Mistakes, and what they cost

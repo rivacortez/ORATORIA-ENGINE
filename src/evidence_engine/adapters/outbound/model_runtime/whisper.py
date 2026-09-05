@@ -136,8 +136,10 @@ class WhisperSpeechRuntime:
                 "the managed speech runtime needs torch and transformers, which are "
                 "not installed. They are an optional extra rather than a dependency: "
                 "the service deploys without a 3 GB machine-learning stack. Install "
-                "with `uv sync --extra managed`, and note that the CUDA wheel index "
-                "is chosen for your card - see docs/governance/BASELINE_PINS.md."
+                'with `pip install "oratoria-evidence-engine[local]"`, and install torch '
+                "FIRST from the index your card needs - the extra deliberately does "
+                "not carry it, because resolving torch from PyPI replaces a working "
+                "CUDA build with the CPU one. See docs/governance/BASELINE_PINS.md."
             ) from error
 
         if resolved.device.startswith("cuda") and not torch.cuda.is_available():

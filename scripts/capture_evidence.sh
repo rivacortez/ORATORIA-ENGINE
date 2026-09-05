@@ -79,6 +79,9 @@ export TERM=dumb
   uv run pytest -v --tb=short --color=no
   echo
 
+  echo "=== C9: the core installs and imports alone ==="
+  uv run pytest -m distribution -v --tb=short --color=no
+  echo
   echo "=== pytest: integration only ==="
   uv run pytest -m integration -v --tb=short --color=no
   echo

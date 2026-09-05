@@ -3,6 +3,15 @@
 ; These are not style rules. Each one guards a claim the specification makes
 ; about the shape of the system (§4.3, §5, NFR-016). A broken contract means
 ; the claim is no longer true, so CI fails before the claim reaches a document.
+;
+; C9 is NOT here, and its absence is deliberate. import-linter reads the
+; source tree, and the ninth claim is about the *distribution*: that
+; `pip install oratoria-evidence-engine` installs a core with no dependencies
+; at all. That was false for the whole project while C2 and C3 were green -
+; the layers were clean and the dependency list carried a web framework, a
+; database driver and an object-store client. No import contract can see a
+; pyproject.toml, so C9 builds the wheel, reads METADATA and installs it in an
+; empty virtual environment: tests/distribution/test_c9_core_installs_alone.py.
 
 [importlinter]
 root_packages =
