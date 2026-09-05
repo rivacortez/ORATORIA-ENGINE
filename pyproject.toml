@@ -23,6 +23,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The managed speech runtime. Deliberately not a dependency: the deployable
+# service must install and run without a machine-learning stack, and only the
+# machine that actually decodes audio needs this.
+#
+# torch is NOT pinned here to a CUDA build. The wheel index depends on the
+# card - this project's workstation is a Blackwell (sm_120) and needs cu130 -
+# and `BASELINE_PINS.md` records that the executable environment is a Phase 3
+# freeze. Install torch first, from the index your card needs, then this extra.
+managed = [
+    "transformers==4.57.6",
+    "accelerate>=0.26",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+]
+# Recording a presentation from a microphone, for the pilot and for anybody
+# who wants to hear what the engine hears.
+record = [
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -97,6 +118,9 @@ ignore = [
 # straight into a committed evidence file. Structured telemetry from it would
 # have nowhere to go.
 "scripts/_pilot_a_checks.py" = ["T201"]
+# The presentation runner. Its whole output is a report a person reads at a
+# terminal; there is nowhere else for it to go.
+"scripts/present.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evidence_engine", "corpus"]
@@ -112,6 +136,15 @@ disallow_any_generics = true
 plugins = []
 mypy_path = "src"
 packages = ["evidence_engine", "corpus"]
+
+[[tool.mypy.overrides]]
+# The managed runtime's stack. Optional extras rather than dependencies - the
+# service deploys without a 3 GB machine-learning install - so mypy will not
+# find them in the default environment and must not fail the gate for it. The
+# adapter imports them inside a function and re-raises with an install command,
+# which is the behaviour these overrides exist to permit.
+module = ["torch.*", "transformers.*", "numpy.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["aioboto3.*", "botocore.*"]

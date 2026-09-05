@@ -31,6 +31,50 @@ Stated up front because most of the design exists to keep these out:
   a separate type with no numeric attribute at all — reading one raises rather
   than defaulting to zero (FR-025).
 
+## Hearing what the engine hears
+
+One command, once the extras are installed. It records a presentation, runs the
+pinned checkpoint over it, and prints what the engine derived.
+
+```bash
+uv sync --extra managed --extra record
+
+# torch is installed separately, from the wheel index your card needs. This
+# workstation is a Blackwell (sm_120) and needs cu130; check yours before
+# copying the line.
+uv pip install torch==2.14.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+uv run python -c "import torch; print(torch.cuda.get_arch_list())"   # your arch must be listed
+
+uv run python scripts/present.py devices                        # pick a physical mic
+uv run python scripts/present.py record --seconds 90 --device 1 -o exposicion.wav
+uv run python scripts/present.py run exposicion.wav
+```
+
+The first run downloads about 3 GB of weights, at the revision
+`BASELINE_PINS.md` pins. Later runs load in eight seconds.
+
+**`devices` flags the virtual inputs.** NVIDIA Broadcast and Voicemeeter
+enumerate as microphones on this machine, and Broadcast's noise removal
+suppresses exactly the breath and creak that mark `cut_off` and `prolongation`.
+Recording through one would encode the enhancer's decisions as data.
+
+### What it will and will not tell you
+
+It gives a real transcript with real word boundaries, and the silent pauses it
+derives from the gaps between them using the versioned 700 ms threshold. Silent
+pause is the one taxonomy class that is *derived* rather than detected, which
+is why it is the one that works today.
+
+It reports **zero** filled pauses, false starts, repetitions, prolongations and
+self-repairs — because the detector is Phase 4 and does not exist. Zero is the
+honest answer, not a failure, and the report says so rather than leaving a
+reader to assume a clean delivery.
+
+And nothing it prints is a figure. The managed runtime declares
+`environment_is_pinned = False`: the backend, container digest and Torch/CUDA
+build freeze in Phase 3, so a number from a run today is reproducible only by
+whoever ran it. Every report ends by saying that.
+
 ## Where it stands
 
 | Phase (§13) | Deliverable                                              | State                                                          |

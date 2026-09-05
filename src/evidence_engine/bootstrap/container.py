@@ -35,6 +35,10 @@ from evidence_engine.adapters.outbound.model_runtime.deterministic import (
     SpeechScript,
     VisualScript,
 )
+from evidence_engine.adapters.outbound.model_runtime.whisper import (
+    WhisperSettings,
+    WhisperSpeechRuntime,
+)
 from evidence_engine.adapters.outbound.object_storage.in_memory import InMemoryMediaStore
 from evidence_engine.adapters.outbound.object_storage.s3 import S3MediaStore
 from evidence_engine.adapters.outbound.persistence.configuration import (
@@ -362,39 +366,69 @@ def _build_runtimes(
     visual_script: VisualScript | None,
 ) -> tuple[SpeechRuntime, VisionRuntime]:
     """Select the model runtimes and register the versions they will report."""
+    speech: SpeechRuntime
+    vision: VisionRuntime
+
     if settings.runtime_mode is RuntimeMode.MANAGED:
-        raise NotImplementedError(
-            "managed ASR and vision runtimes land in phases 3 and 5; the "
-            "deterministic runtimes are what phase 2's exit criterion is defined on"
+        # Speech only. The managed *vision* runtime is Phase 5 and does not
+        # exist, so this mode pairs a real recogniser with the deterministic
+        # vision runtime rather than refusing outright - which is the shape
+        # QA-02 already requires of the engine anyway: losing one modality must
+        # not stop the other.
+        speech = WhisperSpeechRuntime.load(
+            WhisperSettings(
+                device=settings.whisper_device,
+                dtype=settings.whisper_dtype,
+                cache_dir=settings.whisper_cache_dir or None,
+            )
         )
+        vision = DeterministicVisionRuntime(visual_script or VisualScript())
+        _register_versions(
+            registry,
+            (Modality.AUDIO, speech.model_version),
+            (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
+        )
+        return speech, vision
 
     speech = DeterministicSpeechRuntime(speech_script or SpeechScript())
     vision = DeterministicVisionRuntime(visual_script or VisualScript())
 
-    # Registered so that NFR-014's provenance resolves even in this mode. A
-    # deterministic runtime is still a version that produced evidence, and a
-    # result that could not name it would be untraceable in exactly the runs
-    # that are supposed to be the most reproducible.
+    _register_versions(
+        registry,
+        (Modality.AUDIO, ModelVersionId("deterministic-speech-v1")),
+        (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
+    )
+    return speech, vision
+
+
+def _register_versions(registry: ModelRegistry, *versions: tuple[Modality, ModelVersionId]) -> None:
+    """Make the versions resolvable so NFR-014's provenance is not a dangling id.
+
+    A runtime that produced evidence is a version, whether it replayed a script
+    or ran a checkpoint, and a result that could not name the version that made
+    it would be untraceable in exactly the runs meant to be most reproducible.
+    """
     if not isinstance(registry, InMemoryModelRegistry):
         # The persistent registry is seeded by a migration or an administrative
         # call, not by process startup. Registering on boot would let a replica
         # silently reintroduce a version an administrator had just disabled.
-        return speech, vision
+        return
 
-    for modality, model_id in (
-        (Modality.AUDIO, ModelVersionId("deterministic-speech-v1")),
-        (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
-    ):
+    for modality, model_id in versions:
         registry.register(
             ModelVersion(
                 id=model_id,
                 modality=modality,
-                artifact_digest=f"sha256:deterministic-{modality.value}",
+                # A digest the registry can hold. For the deterministic
+                # runtimes there is no artifact; for the managed one the real
+                # weights digest is in `BASELINE_PINS.md` and belongs there
+                # rather than being re-derived at boot, because a mismatch
+                # should be caught by the pin check and not by a service that
+                # has already started.
+                artifact_digest=f"sha256:{model_id.value}",
                 dataset_version="none",
                 approval=ApprovalState.EVALUATED,
                 metrics={},
             ),
             make_active=True,
         )
-
-    return speech, vision

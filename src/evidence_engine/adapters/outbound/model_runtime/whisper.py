@@ -1,0 +1,236 @@
+"""A speech runtime backed by the pinned Whisper checkpoint.
+
+The first runtime in this repository that hears real audio. Everything before
+it replayed a script, which is what Phase 2's exit criterion is defined on and
+is the right thing for a contract test - a scripted runtime is bit-exact by
+construction, so a reproducibility test over it tests the harness.
+
+Three things this deliberately does not do.
+
+*It reports no disfluency events and no prosody.* Whisper is a recogniser. The
+disfluency detector and the prosody estimator the NFRs describe do not exist,
+and returning empty tuples is what keeps the engine's ``Unavailable`` handling
+honest: a runtime that invented a filled pause would make FR-025's path look
+exercised while it was being bypassed. When Phase 4 lands a detector, it plugs
+in beside this, not inside it.
+
+*It does not claim a pinned environment.* ``BASELINE_PINS.md`` fixes four
+freeze stages and the third - backend, container digest, Torch/CUDA build - is
+Phase 3 work that has not happened. So this runtime declares its environment
+unpinned, and that declaration travels: ``environment_is_pinned`` is False, and
+anything downstream that wants to publish a number can ask.
+
+*It does not import torch at module scope.* The service must remain installable
+and deployable without a 3 GB machine-learning stack; the imports happen inside
+``load()`` so that ``container.py`` can reference this module in every mode and
+fail with a sentence rather than an ImportError when the extra is absent.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from evidence_engine.application.ports.runtimes import (
+    AudioWindow,
+    SpeechResult,
+    WordHypothesis,
+)
+from evidence_engine.domain.shared.identifiers import ModelVersionId
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    pass
+
+#: The artifact `BASELINE_PINS.md` pins, by identifier and revision. Hard-coded
+#: rather than configurable: a runtime whose checkpoint is a deployment setting
+#: is a runtime that cannot say which weights produced a result, and §14 asks
+#: exactly that. Changing these is a change to the pins document first.
+PINNED_MODEL = "openai/whisper-large-v3"
+PINNED_REVISION = "06f233fe06e710322aca913c1bc4249a0d71fce1"
+
+#: The decoding configuration the pins fix, restated here so that the code and
+#: the document cannot drift apart silently. Each is argued in
+#: `BASELINE_PINS.md`; the one that matters most is
+#: `condition_on_prev_tokens=False`, which stops the decoder biasing toward
+#: fluent continuations of what it already produced - the grammatical cleanup
+#: FR-011 exists to measure the absence of.
+PINNED_DECODING: dict[str, Any] = {
+    "language": "es",
+    "task": "transcribe",
+    "num_beams": 5,
+    "condition_on_prev_tokens": False,
+}
+
+
+class WhisperRuntimeUnavailable(RuntimeError):
+    """The managed speech runtime was asked for and cannot be built."""
+
+
+@dataclass(frozen=True, slots=True)
+class WhisperSettings:
+    """What a deployment may change without changing which weights ran."""
+
+    device: str = "cuda"
+    #: fp16 halves the residency and is what the pins record the artifact as
+    #: published in. A deployment without a GPU has to say so.
+    dtype: str = "float16"
+    #: Where the artifact is cached. None uses the library default.
+    cache_dir: str | None = None
+
+
+class WhisperSpeechRuntime:
+    """``SpeechRuntime`` over the pinned checkpoint.
+
+    Stateless between calls, because the port requires idempotency: §6.3
+    retries an idempotent window after a model timeout, and a runtime that
+    accumulated state across calls would double-count the retried audio.
+    `condition_on_prev_tokens=False` is part of what makes that true here as
+    well as part of the pinned configuration.
+    """
+
+    #: False, and it says so rather than being silent about it. The executable
+    #: environment - backend, container digest, Torch and CUDA build - freezes
+    #: in Phase 3, and until then any figure this runtime produces is
+    #: reproducible only by whoever ran it.
+    environment_is_pinned = False
+
+    def __init__(self, pipeline: Any, model_version: ModelVersionId) -> None:
+        self._pipeline = pipeline
+        self.model_version = model_version
+
+    @classmethod
+    def load(cls, settings: WhisperSettings | None = None) -> WhisperSpeechRuntime:
+        """Build the runtime, or explain in one sentence why it cannot be built.
+
+        The import failure is caught and re-raised with the install command,
+        because "No module named 'torch'" from three frames inside a container
+        factory is a message that costs somebody an afternoon.
+        """
+        resolved = settings or WhisperSettings()
+        try:
+            import torch
+            from transformers import (
+                WhisperForConditionalGeneration,
+                WhisperProcessor,
+                pipeline,
+            )
+        except ImportError as error:  # pragma: no cover - exercised by hand
+            raise WhisperRuntimeUnavailable(
+                "the managed speech runtime needs torch and transformers, which are "
+                "not installed. They are an optional extra rather than a dependency: "
+                "the service deploys without a 3 GB machine-learning stack. Install "
+                "with `uv sync --extra managed`, and note that the CUDA wheel index "
+                "is chosen for your card - see docs/governance/BASELINE_PINS.md."
+            ) from error
+
+        if resolved.device.startswith("cuda") and not torch.cuda.is_available():
+            raise WhisperRuntimeUnavailable(
+                f"device {resolved.device!r} was requested and torch reports no CUDA "
+                "device. Set ENGINE_WHISPER_DEVICE=cpu to run anyway - it will be "
+                "roughly thirty times slower and is not a configuration any figure "
+                "should come from."
+            )
+
+        processor = WhisperProcessor.from_pretrained(
+            PINNED_MODEL, revision=PINNED_REVISION, cache_dir=resolved.cache_dir
+        )
+        model = WhisperForConditionalGeneration.from_pretrained(
+            PINNED_MODEL,
+            revision=PINNED_REVISION,
+            dtype=getattr(torch, resolved.dtype),
+            cache_dir=resolved.cache_dir,
+        ).to(resolved.device)
+        model.eval()
+
+        built = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            dtype=getattr(torch, resolved.dtype),
+            device=resolved.device,
+        )
+        # The revision, not the name. Two people running "whisper-large-v3" a
+        # year apart are not running the same weights, and the provenance has
+        # to be able to tell them apart.
+        return cls(built, ModelVersionId(f"whisper-large-v3@{PINNED_REVISION[:12]}"))
+
+    async def transcribe(self, window: AudioWindow) -> SpeechResult:
+        """Words and their boundaries. Nothing invented.
+
+        Word-level offsets come from the checkpoint's own alignment heads, via
+        the pipeline's ``chunks``. That route is not the obvious one:
+        ``generate(return_timestamps="word", return_dict_in_generate=True)``
+        returns segment boundaries and **no per-word offsets, with no error**,
+        which is how a project ends up believing it has word timestamps and
+        shipping segment ones. NFR-004's 250 ms target is unreachable from
+        segment boundaries, so the route matters.
+        """
+        samples = self._to_float32(window.samples)
+
+        # Off the event loop: this is 200 ms to several seconds of GPU work and
+        # the coordinator has a socket to keep answering.
+        output = await asyncio.to_thread(
+            self._pipeline,
+            {"raw": samples, "sampling_rate": window.sample_rate_hz},
+            return_timestamps="word",
+            generate_kwargs=dict(PINNED_DECODING),
+        )
+
+        words = tuple(
+            WordHypothesis(
+                raw_text=text,
+                start_ms=window.session_position_ms + int(start * 1000),
+                end_ms=window.session_position_ms + int(end * 1000),
+                # Whisper exposes no per-word posterior. 1.0 would assert a
+                # certainty it never expressed, so the score is the neutral
+                # value and the calibrator - which has no curve for it - turns
+                # it into a RAW confidence that opens no publication gate.
+                score=_NO_REPORTED_POSTERIOR,
+            )
+            for text, start, end in self._chunks(output)
+        )
+
+        return SpeechResult(
+            model_version=self.model_version,
+            words=words,
+            events=(),
+            prosody=(),
+            # The whole window. Whisper decodes a window in one pass and has no
+            # revisable tail, unlike a streaming transducer - so everything it
+            # returns is as stable as it will ever be.
+            stable_through_ms=window.session_position_ms + window.duration_ms,
+        )
+
+    @staticmethod
+    def _to_float32(samples: bytes) -> Any:
+        import numpy as np
+
+        return np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0
+
+    @staticmethod
+    def _chunks(output: Any) -> list[tuple[str, float, float]]:
+        """The pipeline's word chunks, with the unusable ones dropped.
+
+        A chunk can carry ``None`` for either bound when the alignment fails on
+        a fragment. Such a word has no position, and a word with no position
+        cannot be placed on the session clock - so it is dropped rather than
+        given a guessed boundary that every downstream interval would inherit.
+        """
+        usable: list[tuple[str, float, float]] = []
+        for chunk in output.get("chunks", ()):
+            start, end = chunk.get("timestamp", (None, None))
+            text = str(chunk.get("text", "")).strip()
+            if start is None or end is None or not text:
+                continue
+            usable.append((text, float(start), float(end)))
+        return usable
+
+
+#: Whisper reports no per-word posterior. Chosen rather than 1.0, which would
+#: assert a certainty the model never expressed, and rather than 0.0, which
+#: would read as a rejection. The calibrator has no curve for `word`, so this
+#: becomes a RAW confidence either way - the value matters only if somebody
+#: later fits one, and at that point a neutral prior is the honest input.
+_NO_REPORTED_POSTERIOR = 0.5

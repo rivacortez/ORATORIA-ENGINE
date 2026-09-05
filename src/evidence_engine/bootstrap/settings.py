@@ -36,6 +36,13 @@ class RuntimeMode(StrEnum):
 
     ``DETERMINISTIC`` replays scripts and produces byte-identical evidence for
     identical input, which is what QA-05's reproducibility check is built on.
+
+    ``MANAGED`` loads the pinned Whisper checkpoint and hears real audio. It
+    needs the ``managed`` extra, it needs the weights downloaded, and its
+    executable environment is **not** pinned - `BASELINE_PINS.md` freezes that
+    in Phase 3. So a figure produced in this mode is reproducible only by
+    whoever ran it, and the runtime says so through
+    ``environment_is_pinned``.
     """
 
     DETERMINISTIC = "deterministic"
@@ -55,6 +62,16 @@ class Settings(BaseSettings):
     environment: str = "local"
     backend: Backend = Backend.MEMORY
     runtime_mode: RuntimeMode = RuntimeMode.DETERMINISTIC
+
+    #: Where the managed runtime runs. `cuda` unless a deployment says
+    #: otherwise; `cpu` works and is roughly thirty times slower, which is not
+    #: a configuration any reported figure should come from.
+    whisper_device: str = "cuda"
+    #: fp16 is what the pinned artifact is published as and halves residency.
+    whisper_dtype: str = "float16"
+    #: Where the weights are cached. Empty uses the library default, which
+    #: respects HF_HOME.
+    whisper_cache_dir: str = ""
 
     # -- secrets: required, no defaults ------------------------------------
 
