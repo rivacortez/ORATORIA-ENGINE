@@ -1,0 +1,23 @@
+OratorIA - Pilot A rehearsal (mechanical half)
+Captured (UTC): 2026-09-05T06:26:38Z
+Commit:         d6517406cc446a855b1c1804be828f5df0669050
+Branch:         fix/phase-0-5-annotator-ready
+Tree state:     0 uncommitted file(s) outside docs/evidence
+Python:         Python 3.12.10
+
+This is not Pilot A. It is the part of Pilot A's checklist a machine
+can run. The human half - whether two annotators can explain the tiers
+in their own words - is unanswered and stays unanswered until they do.
+
+=== 1. the template opens, and offers the taxonomy and nothing else ===
+usage: corpus template [-h] --recording-id RECORDING_ID --speaker SPEAKER
+                       --variety VARIETY --annotator ANNOTATOR --media MEDIA
+                       --consent-basis {written_informed,recorded_verbal}
+                       --consent-policy X.Y.Z --consent-granted YYYY-MM-DD
+                       [--consent-covers-video] --microphone MICROPHONE
+                       --sample-rate-hz SAMPLE_RATE_HZ --bit-depth BIT_DEPTH
+                       --channels CHANNELS --virtual-audio-bypassed {yes,no}
+                       [--room-notes ROOM_NOTES]
+                       [--pass {first,second,adjudicated}] [--force]
+                       output
+corpus template: error: the following arguments are required: --variety, --consent-basis, --consent-policy, --consent-granted, --microphone, --sample-rate-hz, --bit-depth, --channels, --virtual-audio-bypassed

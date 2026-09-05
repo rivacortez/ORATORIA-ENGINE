@@ -62,6 +62,22 @@ check_refuses() {
 
 corpus() { uv run python -m corpus.cli.main "$@"; }
 
+# Everything `corpus template` now requires beyond the recording's identity.
+# Kept as one array because that is how an operator will keep it: these values
+# change per participant, not per command, and retyping nine flags is how a
+# consent basis ends up wrong.
+RECRUITMENT=(
+  --variety es-PE
+  --consent-basis written_informed
+  --consent-policy 1.0.0
+  --consent-granted 2026-09-01
+  --microphone "Realtek(R) Audio - onboard array"
+  --sample-rate-hz 16000
+  --bit-depth 16
+  --channels 1
+  --virtual-audio-bypassed yes
+)
+
 {
   echo "OratorIA - Pilot A rehearsal (mechanical half)"
   echo "Captured (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -79,9 +95,11 @@ corpus() { uv run python -m corpus.cli.main "$@"; }
   echo "=== 1. the template opens, and offers the taxonomy and nothing else ==="
   # -------------------------------------------------------------------------
   corpus template "$WORK/pilot-ana.eaf" \
-    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav
+    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav \
+    "${RECRUITMENT[@]}"
   corpus template "$WORK/pilot-beto.eaf" \
-    --recording-id pilot-a-001 --speaker P-001 --annotator beto --media pilot-a-001.wav
+    --recording-id pilot-a-001 --speaker P-001 --annotator beto --media pilot-a-001.wav \
+    "${RECRUITMENT[@]}"
   echo
 
   uv run python scripts/_pilot_a_checks.py inspect-template "$WORK/pilot-ana.eaf"
@@ -92,10 +110,12 @@ corpus() { uv run python -m corpus.cli.main "$@"; }
   # -------------------------------------------------------------------------
   check_refuses "corpus template refuses an existing path" \
     corpus template "$WORK/pilot-ana.eaf" \
-    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav
+    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav \
+    "${RECRUITMENT[@]}"
   check "corpus template --force replaces it" \
     corpus template "$WORK/pilot-ana.eaf" \
-    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav --force
+    --recording-id pilot-a-001 --speaker P-001 --annotator ana --media pilot-a-001.wav \
+    "${RECRUITMENT[@]}" --force
   echo
 
   # -------------------------------------------------------------------------

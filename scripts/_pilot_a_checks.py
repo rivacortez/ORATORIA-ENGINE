@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from corpus.io.elan import PROP_SCHEMA, PROP_TAXONOMY, read
-from corpus.schema.records import LEXICAL_CLASSES, AnnotationPass
+from corpus.schema.records import LEXICAL_CLASSES, SCHEMA_VERSION, AnnotationPass
 from evidence_engine.domain.shared.taxonomy import (
     PROHIBITED_CONCEPTS,
     ContextualRole,
@@ -35,7 +35,7 @@ def _eaf(
     events: list[tuple[str, int, int]],
     recording_id: str = "pilot-a-001",
     annotation_pass: str = "first",
-    schema_version: str = "2.0.0",
+    schema_version: str = str(SCHEMA_VERSION),
     taxonomy_version: str = "1.0.0",
 ) -> str:
     """A filled EAF, written literally rather than through the writer.
@@ -200,7 +200,15 @@ def write_refusable(work: Path) -> None:
         encoding="utf-8",
     )
     (work / "future-schema.eaf").write_text(
-        _eaf(annotator="beto", events=events, schema_version="2.0.0"), encoding="utf-8"
+        # Derived, not pinned: the last hardcoded value silently became the
+        # current version when the schema gained the recruitment fields, and
+        # the refusal check then passed nothing through.
+        _eaf(
+            annotator="beto",
+            events=events,
+            schema_version=f"{SCHEMA_VERSION.major + 1}.0.0",
+        ),
+        encoding="utf-8",
     )
     (work / "other-taxonomy.eaf").write_text(
         _eaf(annotator="beto", events=events, taxonomy_version="2.0.0"), encoding="utf-8"
