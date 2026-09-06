@@ -122,6 +122,7 @@ def test_the_public_exports_are_exactly_these() -> None:
         "AudioNotUsable",
         "EngineNotWarmed",
         "LocalInferenceUnavailable",
+        "RemoteChunkLost",
         "RemoteEngineUnavailable",
         "StreamAlreadyClosed",
         # Constants and version

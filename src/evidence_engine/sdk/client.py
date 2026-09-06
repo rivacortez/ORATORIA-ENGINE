@@ -23,11 +23,21 @@ consumer's business, not this module's.
 **The backpressure-without-loss rule, restated for a client with no positive
 ack.** The wire only ever tells you a chunk was *refused*
 (``backpressure.requested``, naming the ``chunk_seq``); nothing ever confirms
-one was *accepted*. So there is exactly one thing safe to keep: the bytes of
-the most recently sent chunk. If a refusal for it arrives before the next
-``send_audio`` call, that call resends those exact bytes under the same
-sequence number and returns ``False`` - the caller retries the same window,
-precisely as the embedded engine's own contract already promises.
+one was *accepted*, and a refusal can name ANY chunk still outstanding, not
+only the one most recently sent - the reader task and ``send_audio`` run
+concurrently, so a refusal for an earlier chunk can still be in flight after
+later ones were already sent. So this keeps every not-yet-confirmed chunk's
+bytes, keyed by its own ``chunk_seq``, bounded to the server's own advertised
+window (``session.accepted``'s ``max_queue_depth``, or
+``DEFAULT_IN_FLIGHT_WINDOW`` if an older server did not name one). A refusal
+resends exactly the bytes for the ``chunk_seq`` it named, under that same
+sequence number, and returns ``False`` - the caller retries the same window,
+precisely as the embedded engine's own contract already promises. If the
+named ``chunk_seq`` has already aged out of the retained window, this raises
+``RemoteChunkLost`` rather than resending different bytes under a sequence
+number that no longer describes them - a wrong resend would look like
+backpressure handled correctly while quietly corrupting the transcript's
+timing.
 
 **The residual risk this leaves, named rather than hidden.** A refusal for the
 very last chunk can arrive *after* the caller has already moved on to
@@ -52,6 +62,7 @@ import base64
 import contextlib
 import time
 import uuid
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, cast
@@ -62,7 +73,7 @@ from evidence_engine.domain.shared.identifiers import ModelVersionId, SessionId
 from evidence_engine.domain.shared.provenance import ModelRole
 from evidence_engine.sdk.configuration import EngineConfiguration, SessionConfiguration
 from evidence_engine.sdk.engine import AnalysisResult
-from evidence_engine.sdk.errors import RemoteEngineUnavailable, StreamAlreadyClosed
+from evidence_engine.sdk.errors import RemoteChunkLost, RemoteEngineUnavailable, StreamAlreadyClosed
 from evidence_engine.sdk.results import evidence_from_json
 
 #: How long `finish()` polls `GET /result` for before giving up. §6.1 step 10
@@ -73,6 +84,13 @@ RESULT_POLL_BOUND_SECONDS = 10.0
 #: abort that never gets acknowledged should not hang a caller who is already
 #: trying to leave.
 ABORT_WAIT_BOUND_SECONDS = 10.0
+#: How many not-yet-confirmed chunks this client keeps bytes for when
+#: `session.accepted` did not name a `max_queue_depth` - an older server, or a
+#: transport substituting its own accepted frame in a test. Matches
+#: `Settings.max_queue_depth`'s own default (`bootstrap/settings.py`); a
+#: same-version server names its own bound instead, and that value governs
+#: once `session.accepted` has been read.
+DEFAULT_IN_FLIGHT_WINDOW = 8
 
 
 class WsConnection(Protocol):
@@ -235,6 +253,12 @@ class OratoriaClient:
         was loaded and warmed by the server's own startup (``bootstrap.app``'s
         lifespan) before this process ever connected. This confirms that,
         rather than repeating it.
+
+        Both ``models`` and ``instance`` must be present in ``/v1/capabilities``,
+        not merely well-shaped when present. A response missing either is what
+        an older or misconfigured service looks like - the same one this check
+        exists to keep a caller from mistaking for ready during a rolling
+        upgrade of the pilot's GPU workstations.
         """
         ready_url = f"{self._base_url}/health/ready"
         status, body = await self._transport.get_json(ready_url, headers=self._headers())
@@ -253,14 +277,27 @@ class OratoriaClient:
                 f"{capabilities_url} returned HTTP {status}: {capabilities!r}"
             )
 
-        models = capabilities.get("models", {})
-        if isinstance(models, Mapping):
-            self._contributions = {
-                ModelRole(str(role)): ModelVersionId(str(version))
-                for role, version in models.items()
-            }
+        models = capabilities.get("models")
+        if not isinstance(models, Mapping):
+            raise RemoteEngineUnavailable(
+                f"{capabilities_url} did not name its models: {capabilities!r}. An engine "
+                "able to confirm readiness always names what it loaded; its absence means "
+                "this response came from an older or misconfigured service, not one this "
+                "client can treat as ready."
+            )
         instance = capabilities.get("instance")
-        self._instance = instance if isinstance(instance, Mapping) else None
+        if not isinstance(instance, Mapping):
+            raise RemoteEngineUnavailable(
+                f"{capabilities_url} did not name its instance: {capabilities!r}. A pilot "
+                "can run more than one GPU workstation behind the same consuming "
+                "application, and a client that cannot tell them apart must not be told "
+                "it is ready to proceed."
+            )
+
+        self._contributions = {
+            ModelRole(str(role)): ModelVersionId(str(version)) for role, version in models.items()
+        }
+        self._instance = instance
         self._warmed = True
 
     def create_stream(
@@ -310,13 +347,24 @@ class _StreamState:
     position_ms: int = 0
     session_id: str | None = None
     schema_version: str = "1.0.0"
-    #: The only chunk that can still be resent - see the module docstring's
-    #: "backpressure-without-loss rule, restated for a client with no
-    #: positive ack".
-    last_sent: _SentChunk | None = None
-    #: Set by the reader task when `backpressure.requested` names a chunk;
-    #: cleared by `send_audio`/`finish` once that chunk has been resent.
-    refused_chunk_seq: int | None = None
+    #: Every not-yet-confirmed chunk's bytes, keyed by its own `chunk_seq` -
+    #: see the module docstring's "backpressure-without-loss rule, restated
+    #: for a client with no positive ack". A plain `dict` preserves insertion
+    #: order, which is what makes evicting `next(iter(...))` remove the
+    #: OLDEST entry rather than an arbitrary one.
+    in_flight: dict[int, _SentChunk] = field(default_factory=dict)
+    #: `chunk_seq`s refused by the server, oldest first - the order
+    #: `backpressure.requested` named them, and the order a resend answers
+    #: them in. Appended to by the reader task; drained by
+    #: `send_audio`/`finish` one at a time.
+    refused_chunk_seqs: deque[int] = field(default_factory=deque)
+    #: The server's own advertised bound on outstanding chunks, learned from
+    #: `session.accepted`'s `max_queue_depth`. `None` until accepted, in which
+    #: case `DEFAULT_IN_FLIGHT_WINDOW` stands in for it.
+    accepted_window: int | None = None
+    #: Which physical instance accepted this session (`session.accepted`'s
+    #: `instance_id`). `None` until accepted.
+    instance_id: str | None = None
     backpressure_signals: int = 0
     completion_payload: dict[str, object] | None = None
     events: asyncio.Queue[OutboundEvent] = field(default_factory=asyncio.Queue)
@@ -372,8 +420,17 @@ class RemoteStreamSession:
         self._ws = ws
         # `session.accepted` is consumed here, not surfaced through `receive()`
         # - the embedded session has no equivalent message at all, and parity
-        # with it is the point (see the module docstring).
-        await ws.receive_json()
+        # with it is the point (see the module docstring). Its payload names
+        # two things this client remembers for the rest of the session: which
+        # instance accepted it, and how large a window of chunks it may keep
+        # sent bytes for.
+        accepted = await ws.receive_json()
+        accepted_payload = accepted.get("payload", {})
+        if isinstance(accepted_payload, Mapping):
+            instance_id = accepted_payload.get("instance_id")
+            state.instance_id = instance_id if isinstance(instance_id, str) else None
+            max_queue_depth = accepted_payload.get("max_queue_depth")
+            state.accepted_window = max_queue_depth if isinstance(max_queue_depth, int) else None
         state.reader_task = asyncio.create_task(self._read_loop())
         state.opened = True
 
@@ -390,7 +447,7 @@ class RemoteStreamSession:
                 payload = frame.get("payload", {})
                 chunk_seq = payload.get("chunk_seq") if isinstance(payload, Mapping) else None
                 if isinstance(chunk_seq, int):
-                    state.refused_chunk_seq = chunk_seq
+                    state.refused_chunk_seqs.append(chunk_seq)
                     state.backpressure_signals += 1
 
             try:
@@ -445,6 +502,37 @@ class RemoteStreamSession:
             }
         )
 
+    async def _resend_refused(self) -> None:
+        """Resend the oldest still-refused chunk under its own ``chunk_seq``.
+
+        Raises ``RemoteChunkLost`` if this client no longer holds its bytes -
+        the retained window (``accepted_window``, or
+        ``DEFAULT_IN_FLIGHT_WINDOW`` before ``session.accepted`` has named one)
+        was exceeded since the refusal arrived. Resending different bytes
+        under that sequence number would corrupt the transcript's timing
+        rather than admit the chunk is gone, which is why this raises instead.
+        """
+        state = self._state
+        refused_seq = state.refused_chunk_seqs.popleft()
+        resend = state.in_flight.get(refused_seq)
+        if resend is None:
+            window = state.accepted_window or DEFAULT_IN_FLIGHT_WINDOW
+            raise RemoteChunkLost(
+                f"chunk_seq={refused_seq} was refused by the server but this client no "
+                f"longer retains its bytes (retained window is {window} chunks). Its "
+                "audio was produced and is now lost."
+            )
+        await self._send_wire_chunk(resend)
+
+    def _remember_sent(self, chunk: _SentChunk) -> None:
+        """Keep ``chunk``'s bytes, evicting the oldest once the window is full."""
+        state = self._state
+        state.in_flight[chunk.chunk_seq] = chunk
+        window = state.accepted_window or DEFAULT_IN_FLIGHT_WINDOW
+        while len(state.in_flight) > window:
+            oldest_seq = next(iter(state.in_flight))
+            del state.in_flight[oldest_seq]
+
     # -- sending ------------------------------------------------------------
 
     async def send_audio(self, samples: bytes, *, is_final: bool = False) -> bool:
@@ -460,11 +548,8 @@ class RemoteStreamSession:
         self._require_open()
         state = self._state
 
-        if state.refused_chunk_seq is not None:
-            resend = state.last_sent
-            state.refused_chunk_seq = None
-            if resend is not None:
-                await self._send_wire_chunk(resend)
+        if state.refused_chunk_seqs:
+            await self._resend_refused()
             return False
 
         duration_ms = self._configuration.duration_ms_for(
@@ -479,7 +564,7 @@ class RemoteStreamSession:
             is_final=is_final,
         )
         await self._send_wire_chunk(chunk)
-        state.last_sent = chunk
+        self._remember_sent(chunk)
         state.sequence += 1
         state.position_ms += duration_ms
         return True
@@ -495,6 +580,16 @@ class RemoteStreamSession:
     def pending(self) -> int:
         """How many events are queued right now, without waiting."""
         return self._state.events.qsize() if self._state.opened else 0
+
+    @property
+    def instance_id(self) -> str | None:
+        """Which physical instance accepted this session (`session.accepted`).
+
+        ``None`` until the session has opened - a caller that reads it before
+        the first ``send_audio`` sees the same "not yet known" the wire itself
+        has not reported yet, rather than a stale value.
+        """
+        return self._state.instance_id
 
     # -- finishing ------------------------------------------------------------
 
@@ -514,9 +609,8 @@ class RemoteStreamSession:
         state = self._state
         state.closed = True
 
-        if state.refused_chunk_seq is not None and state.last_sent is not None:
-            await self._send_wire_chunk(state.last_sent)
-            state.refused_chunk_seq = None
+        while state.refused_chunk_seqs:
+            await self._resend_refused()
 
         await self._ws.send_json(
             {**self._envelope(monotonic_time_ms=state.position_ms), "type": "session.complete"}

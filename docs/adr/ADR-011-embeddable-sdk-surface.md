@@ -173,7 +173,8 @@ identifiers and stamps that differ by construction. It passes.
 - Backpressure that does not lose a chunk: the admission check in
   `StreamingCoordinator._admit` now runs *before* the chunk is marked seen,
   and `backpressure.requested` names the refused `chunk_seq` so a client
-  knows exactly what to resend.
+  knows exactly what to resend. The client's own half of that contract:
+  resend exactly the refused `chunk_seq`; loss raises `RemoteChunkLost`.
 - `session.completed` states `finalized_through_ms` and `captured_ms`, so a
   client can tell how far a run got without holding the socket open for the
   whole session.

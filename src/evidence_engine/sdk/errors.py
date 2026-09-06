@@ -57,6 +57,20 @@ class RemoteEngineUnavailable(OratoriaError):
     """
 
 
+class RemoteChunkLost(OratoriaError):
+    """A refused chunk's bytes are no longer held by this client.
+
+    Raised when ``backpressure.requested`` names a ``chunk_seq`` sent long
+    enough ago that its bytes were evicted from the retained window (see
+    ``sdk.client.DEFAULT_IN_FLIGHT_WINDOW``). Distinct from a routine refusal,
+    which costs a round trip and nothing else: this one means the audio for
+    that chunk was produced by the caller and is now provably gone. Resending
+    different bytes under the refused sequence number would look like
+    backpressure handled correctly while quietly corrupting the transcript's
+    timing, which is why this is raised instead.
+    """
+
+
 class EngineNotWarmed(OratoriaError):
     """Analysis was attempted before the model was loaded.
 

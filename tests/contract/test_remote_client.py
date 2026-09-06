@@ -36,6 +36,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from evidence_engine import EngineConfiguration
+from evidence_engine.adapters.inbound.rest.serialization import render_document
 from evidence_engine.adapters.outbound.model_runtime.deterministic import (
     DeterministicSpeechRuntime,
     DeterministicVisionRuntime,
@@ -46,12 +47,13 @@ from evidence_engine.adapters.outbound.telemetry.clock import FrozenClock
 from evidence_engine.application.ports.streaming import ServerMessageType
 from evidence_engine.bootstrap.app import create_app
 from evidence_engine.bootstrap.container import Container
+from evidence_engine.domain.evidence.document import EvidenceDocument
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.provenance import ModelRole
 from evidence_engine.sdk.client import OratoriaClient, RemoteStreamSession
 from evidence_engine.sdk.engine import OratoriaEngine
-from evidence_engine.sdk.errors import RemoteEngineUnavailable
-from evidence_engine.sdk.results import Evidence, evidence_from_json
+from evidence_engine.sdk.errors import RemoteChunkLost, RemoteEngineUnavailable
+from evidence_engine.sdk.results import Evidence, evidence_from, evidence_from_json
 
 pytestmark = pytest.mark.contract
 
@@ -132,7 +134,15 @@ class _FakeTransport:
         return self.ws_connection
 
 
-def _accepted_frame(session_id: str = "sess-0001") -> dict[str, object]:
+def _accepted_frame(
+    session_id: str = "sess-0001",
+    *,
+    instance_id: str = "gpu-workstation-1",
+    max_queue_depth: int | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"run_id": "run-0001", "instance_id": instance_id}
+    if max_queue_depth is not None:
+        payload["max_queue_depth"] = max_queue_depth
     return {
         "schema_version": "1.0.0",
         "session_id": session_id,
@@ -140,7 +150,7 @@ def _accepted_frame(session_id: str = "sess-0001") -> dict[str, object]:
         "event_seq": 1,
         "monotonic_time_ms": 0,
         "type": "session.accepted",
-        "payload": {"run_id": "run-0001", "instance_id": "gpu-workstation-1"},
+        "payload": payload,
     }
 
 
@@ -237,6 +247,42 @@ async def test_warmup_learns_the_contributions_by_role() -> None:
     }
 
 
+async def test_warmup_refuses_capabilities_missing_the_instance() -> None:
+    """P2 regression: an old or misconfigured service can answer
+    `/v1/capabilities` with `models` but no `instance` - `warmup()` must not
+    let that pass as ready, or a pilot rolling out a new GPU workstation would
+    have a client unable to tell which instance ever produced a result."""
+    transport = _FakeTransport(
+        get_responses={
+            "/health/ready": [
+                (200, {"status": "ready", "checks": {"speech:warm": "warm (1.0 s)"}})
+            ],
+            "/v1/capabilities": [(200, {"models": {"recogniser": "deterministic-speech-v1"}})],
+        },
+    )
+    client = OratoriaClient("http://engine.local:8000", "test-key", transport=transport)
+
+    with pytest.raises(RemoteEngineUnavailable, match="did not name its instance"):
+        await client.warmup()
+
+
+async def test_warmup_refuses_capabilities_missing_the_models() -> None:
+    """The same rule, for the other required field: `instance` with no
+    `models` is just as much a service this client must not treat as ready."""
+    transport = _FakeTransport(
+        get_responses={
+            "/health/ready": [
+                (200, {"status": "ready", "checks": {"speech:warm": "warm (1.0 s)"}})
+            ],
+            "/v1/capabilities": [(200, {"instance": {"id": "gpu-1", "hostname": "gpu-1"}})],
+        },
+    )
+    client = OratoriaClient("http://engine.local:8000", "test-key", transport=transport)
+
+    with pytest.raises(RemoteEngineUnavailable, match="did not name its models"):
+        await client.warmup()
+
+
 # ---------------------------------------------------------------------------
 # send_audio()
 # ---------------------------------------------------------------------------
@@ -321,6 +367,114 @@ async def test_a_refusal_is_resent_under_its_original_chunk_seq_and_returns_fals
     resend = transport.ws_connection.sent[-1]
     assert resend["chunk_seq"] == 0
     assert base64.b64decode(str(resend["samples"])) == SILENT_CHUNK
+    await _settle(stream)
+
+
+async def test_a_refusal_for_an_earlier_chunk_is_resent_correctly_even_after_later_sends() -> None:
+    """P1 regression: `backpressure.requested` can name any chunk still
+    outstanding, not only the one most recently sent - the reader task can
+    still be catching up on an earlier refusal after `send_audio` has already
+    moved on to later chunks. Resending "whatever was sent last" would resend
+    the wrong bytes under the wrong `chunk_seq` and silently drop the one
+    actually refused."""
+    chunk_0 = b"\x00\x00" * FRAMES_PER_WINDOW
+    chunk_1 = b"\x11\x11" * FRAMES_PER_WINDOW
+    chunk_2 = b"\x22\x22" * FRAMES_PER_WINDOW
+    a_later_window = b"\x33\x33" * FRAMES_PER_WINDOW
+
+    transport = _FakeTransport(
+        post_response=_created_session_response(),
+        ws_frames=[
+            _accepted_frame(),
+            {
+                "schema_version": "1.0.0",
+                "session_id": "sess-0001",
+                "message_id": "msg-bp",
+                "event_seq": 2,
+                "monotonic_time_ms": 0,
+                "type": "backpressure.requested",
+                "payload": {"queue_depth": 1, "chunk_seq": 0},
+            },
+        ],
+    )
+    client = OratoriaClient("http://engine.local", "test-key", transport=transport)
+    stream = client.create_stream()
+
+    assert await stream.send_audio(chunk_0) is True
+    assert await stream.send_audio(chunk_1) is True
+    assert await stream.send_audio(chunk_2) is True
+
+    # Deterministic synchronisation, as above: once `receive()` returns the
+    # refusal, the reader task has already recorded it.
+    refusal = await stream.receive()
+    assert refusal.payload["chunk_seq"] == 0
+
+    accepted = await stream.send_audio(a_later_window)
+
+    assert accepted is False, "the caller's new window was not sent - it must offer it again"
+    assert transport.ws_connection is not None
+    resend = transport.ws_connection.sent[-1]
+    assert resend["chunk_seq"] == 0, "must resend the REFUSED chunk_seq, not the last one sent"
+    assert base64.b64decode(str(resend["samples"])) == chunk_0, (
+        "must resend chunk 0's own bytes, not chunk 2's - the last chunk sent"
+    )
+    await _settle(stream)
+
+
+async def test_a_refusal_for_an_evicted_chunk_raises_remote_chunk_lost() -> None:
+    """P1 regression: bytes are retained only for the server's own advertised
+    window (`session.accepted`'s `max_queue_depth`). A refusal that names a
+    chunk_seq older than that window is a chunk this client no longer holds -
+    resending silently would forge different bytes under the refused
+    chunk_seq, losing the real audio without ever saying so."""
+    transport = _FakeTransport(
+        post_response=_created_session_response(),
+        ws_frames=[
+            _accepted_frame(max_queue_depth=2),
+            {
+                "schema_version": "1.0.0",
+                "session_id": "sess-0001",
+                "message_id": "msg-bp",
+                "event_seq": 2,
+                "monotonic_time_ms": 0,
+                "type": "backpressure.requested",
+                "payload": {"queue_depth": 1, "chunk_seq": 0},
+            },
+        ],
+    )
+    client = OratoriaClient("http://engine.local", "test-key", transport=transport)
+    stream = client.create_stream()
+
+    # Window is 2: sending 4 chunks evicts chunk_seq 0 and 1 from `in_flight`
+    # before the refusal for chunk_seq 0 is ever read off the socket.
+    for _ in range(4):
+        assert await stream.send_audio(SILENT_CHUNK) is True
+
+    refusal = await stream.receive()
+    assert refusal.payload["chunk_seq"] == 0
+
+    with pytest.raises(RemoteChunkLost, match="chunk_seq=0"):
+        await stream.send_audio(SILENT_CHUNK)
+
+    await _settle(stream)
+
+
+async def test_the_stream_reports_which_instance_accepted_it() -> None:
+    """P3: `session.accepted.instance_id` names the physical GPU workstation
+    that accepted this session - a pilot running more than one behind the
+    same consuming application needs to attribute a result to it."""
+    transport = _FakeTransport(
+        post_response=_created_session_response(),
+        ws_frames=[_accepted_frame(instance_id="gpu-workstation-7")],
+    )
+    client = OratoriaClient("http://engine.local", "test-key", transport=transport)
+    stream = client.create_stream()
+
+    assert stream.instance_id is None, "unknown before the session has opened"
+
+    assert await stream.send_audio(SILENT_CHUNK) is True
+
+    assert stream.instance_id == "gpu-workstation-7"
     await _settle(stream)
 
 
@@ -554,6 +708,28 @@ async def test_evidence_from_json_matches_the_embedded_translation(
     assert _canonical(remote_evidence) == _canonical(embedded_evidence)
 
 
+async def test_evidence_from_json_is_a_lossless_translation_of_evidence_from(
+    document: EvidenceDocument,
+) -> None:
+    """P2 regression: `_canonical()` above compares a curated subset of
+    fields - the identifiers and stamps that differ by construction between
+    the embedded and hosted paths are excluded there, but so is confidence,
+    prosody, word placement timing, event tolerance/context_role and
+    manifest.models, none of which differ by construction. A lossy field
+    there would still pass.
+
+    This compares the WHOLE `Evidence`, built two ways from the exact same
+    `document`: through the wire (`render_document` then `evidence_from_json`,
+    what `OratoriaClient` does) and directly (`evidence_from`, what the
+    embedded engine does). Nothing here differs by construction - same
+    session, same run, same clock - so full equality is the correct
+    assertion, not an approximation of one.
+    """
+    rendered = render_document(document, schema_version="1.0.0")
+
+    assert evidence_from_json(rendered) == evidence_from(document)
+
+
 # ---------------------------------------------------------------------------
 # One test against the real app, over a real socket
 # ---------------------------------------------------------------------------
@@ -581,6 +757,10 @@ def running_app(container: Container) -> Iterator[str]:
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        # P3: `join(timeout=...)` returns silently whether or not the thread
+        # actually stopped - a hung server would leak into every later test
+        # sharing this process with nothing here to say so.
+        assert not thread.is_alive(), "uvicorn's server thread did not stop within the join timeout"
 
 
 async def test_oratoria_client_drives_a_real_session_end_to_end(

@@ -588,6 +588,53 @@ would be scope beyond what was asked. `sdk/results.py`'s module docstring
 says so, next to `evidence_from_json`, so the gap is findable at the
 definition site and not only in this record.
 
+**Amendment - six findings from an adversarial review of this section, fixed.**
+
+1. *Resend picked the wrong chunk.* `send_audio`/`finish` resent whatever
+   `_StreamState` called `last_sent` - a single scalar - whenever a refusal
+   was pending, never checking that its `chunk_seq` matched the one the
+   server actually refused. Since sends are fire-and-forget and the reader
+   task processes frames concurrently, a refusal naming an earlier chunk
+   while later ones were already sent resent the wrong bytes under the wrong
+   sequence number and silently dropped the one actually refused. Fixed by
+   keeping every not-yet-confirmed chunk's bytes in a map keyed by its own
+   `chunk_seq` (`_StreamState.in_flight`), bounded to `session.accepted`'s
+   `max_queue_depth` (`DEFAULT_IN_FLIGHT_WINDOW` if unnamed), and a FIFO of
+   refused sequences (`refused_chunk_seqs`) so a resend always answers the
+   oldest refusal first, under its own sequence number. A refusal naming a
+   chunk this client no longer retains raises `RemoteChunkLost` (new,
+   exported from `evidence_engine`) instead of resending different bytes
+   under that sequence number.
+2. *`warmup()` tolerated an incomplete `/v1/capabilities`.* `models` and
+   `instance` were read with `.get(key, {})`/`.get(key)` and no presence
+   check, so an old or misconfigured service - plausible mid rolling-upgrade
+   of the pilot's GPU workstations - passed as ready with empty
+   contributions. Both are now required; either's absence raises
+   `RemoteEngineUnavailable`.
+3. *The conformance test's `_canonical()` compared too little.* Confidence,
+   prosody, word placement timing, event `tolerance_ms`/`context_role` and
+   `manifest.models` were outside its curated field set, so a lossy
+   translation would have passed it. A second conformance test now asserts
+   `evidence_from_json(render_document(doc)) == evidence_from(doc)` - full
+   equality, for the same document, where nothing differs by construction so
+   nothing excuses a difference. It passes against `evidence_from_json`
+   unchanged; the gap was in the test's rigor, not in the translation.
+4. *`session.abort` on a terminal session raised past the handler.*
+   `AnalysisSession.fail()` refuses a session already `completed` or `failed`
+   (`IllegalSessionTransition`), and that exception escaped `_control`
+   uncaught. The WebSocket handler now catches it, replies
+   `error{code: "illegal_transition"}`, and the socket still closes 1000
+   rather than dropping without explanation.
+5. *`session.accepted`'s payload was read once and discarded.* `instance_id`
+   - which physical GPU workstation accepted the session - is now kept on
+   `RemoteStreamSession` and exposed as a read-only `instance_id` property,
+   `None` until the session opens.
+6. *The real-app fixture's teardown did not check its own join.*
+   `thread.join(timeout=...)` returns silently whether or not the thread
+   actually stopped; a hung `uvicorn` server thread would have leaked into
+   every later test in the same process with nothing here to say so. It now
+   asserts `not thread.is_alive()`.
+
 ---
 
 ## 4. Mistakes, and what they cost

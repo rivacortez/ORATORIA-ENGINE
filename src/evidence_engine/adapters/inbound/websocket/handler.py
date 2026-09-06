@@ -69,6 +69,7 @@ from evidence_engine.application.workflows.streaming import (
     StreamingState,
 )
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
+from evidence_engine.domain.shared.errors import IllegalSessionTransition
 from evidence_engine.domain.shared.identifiers import SessionId
 
 router = APIRouter(tags=["stream"])
@@ -388,7 +389,17 @@ async def _control(
         # the run repository never observes a session already marked `failed`
         # while its most recent run still claims to be `running`.
         await engine.close_run.execute(coordinator.state.run_id, succeeded=False)
-        await engine.capture_control.abort(caller, session_id)
+        try:
+            await engine.capture_control.abort(caller, session_id)
+        except IllegalSessionTransition as error:
+            # A session already `completed` or `failed` has nothing left to
+            # abort - `fail()` refuses the transition (domain/sessions/state.py)
+            # rather than silently re-terminating it. Letting that escape here
+            # would turn a client's late `session.abort` into an unhandled 500
+            # instead of the non-fatal `error` §7.3 promises for every other
+            # refusal on this socket.
+            await channel.send_error(session_id, "illegal_transition", str(error))
+            return False
         await channel.send_aborted(
             session_id,
             {

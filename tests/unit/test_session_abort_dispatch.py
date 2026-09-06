@@ -22,6 +22,7 @@ from evidence_engine.adapters.inbound.websocket.protocol import (
     ControlMessage,
     Envelope,
 )
+from evidence_engine.domain.shared.errors import IllegalSessionTransition
 from evidence_engine.domain.shared.identifiers import RunId, SessionId
 
 SCHEMA_VERSION = "1.0.0"
@@ -51,6 +52,15 @@ class _FakeCaptureControl:
 
     async def abort(self, caller: object, session_id: SessionId) -> None:
         self.aborted.append((caller, session_id))
+
+
+@dataclass
+class _FakeCaptureControlOnATerminalSession:
+    """`fail()` refuses a session already `completed` or `failed` - this is
+    what `_control` sees when a client's `session.abort` arrives too late."""
+
+    async def abort(self, caller: object, session_id: SessionId) -> None:
+        raise IllegalSessionTransition("a session in 'completed' cannot move to 'failed'")
 
 
 @dataclass
@@ -105,3 +115,40 @@ async def test_session_abort_closes_the_run_unsuccessful_and_replies_aborted() -
     aborted_frames = [frame for frame in socket.frames if frame["type"] == "session.aborted"]
     assert len(aborted_frames) == 1
     assert aborted_frames[0]["payload"] == {"run_id": RUN_ID.value, "captured_ms": 4_000}
+
+
+async def test_session_abort_on_a_terminal_session_replies_error_and_closes() -> None:
+    """P2 regression: `fail()` refuses a session already `completed` or
+    `failed` (domain/sessions/state.py's `require_transition`), and that
+    `IllegalSessionTransition` used to escape `_control` uncaught - an
+    unhandled 500 instead of the non-fatal `error` §7.3 promises for every
+    other refusal on this socket."""
+    engine = _FakeEngine(
+        close_run=_FakeCloseRun(),
+        capture_control=cast(Any, _FakeCaptureControlOnATerminalSession()),
+    )
+    coordinator = _FakeCoordinator(state=_FakeState(run_id=RUN_ID, captured_audio_ms=4_000))
+    socket = _RecordingSocket()
+    channel = WebSocketEventChannel(socket, SCHEMA_VERSION)
+
+    keep_open = await _control(
+        cast(Any, engine),
+        cast(Any, coordinator),
+        channel,
+        cast(Any, None),
+        SESSION_ID,
+        cast(Any, None),
+        _abort_message(),
+    )
+
+    assert keep_open is False, "the socket still closes - an abort is a client decision"
+    # The run is still closed unsuccessful even though the session transition
+    # was refused: nothing about `capture_control.abort` failing undoes that.
+    assert engine.close_run.calls == [(RUN_ID, False)]
+
+    error_frames = [frame for frame in socket.frames if frame["type"] == "error"]
+    assert len(error_frames) == 1, "the terminal session must be answered, not silently dropped"
+    assert error_frames[0]["payload"]["code"] == "illegal_transition"
+
+    aborted_frames = [frame for frame in socket.frames if frame["type"] == "session.aborted"]
+    assert not aborted_frames, "a refused transition never happened and must not be announced"

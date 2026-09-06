@@ -50,6 +50,7 @@ from evidence_engine.sdk.errors import (
     EngineNotWarmed,
     LocalInferenceUnavailable,
     OratoriaError,
+    RemoteChunkLost,
     RemoteEngineUnavailable,
     StreamAlreadyClosed,
 )
@@ -102,6 +103,7 @@ __all__ = [
     # Errors
     "OratoriaError",
     "ProsodyReading",
+    "RemoteChunkLost",
     "RemoteEngineUnavailable",
     "SessionConfiguration",
     "SpeechEvent",
