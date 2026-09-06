@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 
 from evidence_engine.domain.shared.identifiers import EventId, RunId
+from evidence_engine.domain.transcript.tokens import TokenSequence
 
 #: Positions are bucketed before hashing. Boundary estimates move by a few
 #: milliseconds between passes as the model gains right context, and an id
@@ -59,8 +60,22 @@ def derive_event_id(
     return EventId(f"ev_{digest}")
 
 
-def derive_token_id(run_id: RunId, start_ms: int, raw_text: str) -> str:
+def derive_token_id(run_id: RunId, sequence: TokenSequence, raw_text: str) -> str:
     """Derive the stable id for one word token.
+
+    Derived from the **lexical sequence**, not from a start boundary. Two
+    reasons, and the second is why this changed.
+
+    A boundary jitters between passes as the model gains right context, which
+    is what `POSITION_BUCKET_MS` exists to absorb for events. A sequence does
+    not jitter: the window position is fixed and the emission index is the
+    order the runtime produced words in, so no bucketing is needed and none is
+    applied.
+
+    And a word whose alignment failed has no boundary at all. Keying on one
+    would leave exactly those words unable to have a stable id - the words the
+    aligner already struggled with would be the ones that churned on every
+    pass.
 
     Includes the text, unlike events. A word hypothesis genuinely changes
     identity when the recognizer changes its mind - "treinta" becoming
@@ -68,7 +83,6 @@ def derive_token_id(run_id: RunId, start_ms: int, raw_text: str) -> str:
     transcript's own ``revise`` path handles the case where a caller does want
     to keep the identity.
     """
-    bucket = start_ms // POSITION_BUCKET_MS
-    material = f"{run_id.value}|{bucket}|{raw_text}"
+    material = f"{run_id.value}|{sequence.window_position_ms}|{sequence.index}|{raw_text}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
     return f"tok_{digest}"

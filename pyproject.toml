@@ -6,7 +6,28 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 
-dependencies = [
+# **Empty, and that is the point.**
+#
+# `domain/` imports nothing but the standard library and `application/`
+# imports no third party at all - C2 and C3 have enforced that since the
+# project started. What was never enforced was the *distribution*: the base
+# dependency list carried FastAPI, SQLAlchemy, asyncpg, Redis, aioboto3 and
+# OpenTelemetry, so `pip install oratoria-evidence-engine` installed a server
+# and its whole infrastructure stack to get at a package that needs neither.
+#
+# A consumer embedding the engine - the case ADR-001 exists for - was paying
+# for a web framework and a database driver to read a taxonomy. Now the core
+# installs alone and every runtime concern is opt-in. C9 checks this against
+# the built wheel rather than against this file, because a dependency can be
+# declared correctly here and still be dragged in transitively.
+dependencies = []
+
+[project.optional-dependencies]
+# The hosted service: REST, WebSocket, PostgreSQL, Redis, object storage,
+# telemetry. Everything that makes the engine a *deployment* rather than a
+# library. `evidence_engine.bootstrap` refuses to import without it and says
+# so (see `evidence_engine._extras`).
+server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
@@ -21,8 +42,43 @@ dependencies = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-instrumentation-fastapi>=0.49b0",
 ]
-
-[project.optional-dependencies]
+# Local inference: the pinned research baseline running on the consumer's own
+# hardware. Renamed from `managed`, which said nothing about what it loads -
+# see `RuntimeMode` for why that name did damage.
+#
+# torch is NOT here, and must not be. The wheel index depends on the card
+# - this project's workstation is a Blackwell (sm_120) and needs cu130 - and
+# `uv sync --extra local` would resolve the CPU build from PyPI and silently
+# replace a working CUDA install. That has happened on this machine. Install
+# torch first, from the index your card needs, then this extra.
+local = [
+    "transformers==4.57.6",
+    "accelerate>=0.26",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+]
+# The remote client: `OratoriaClient` speaks HTTP and WebSocket to a hosted
+# engine over the network (the pilot topology - the engine on a GPU
+# workstation, OratorIA's backend on CPU infrastructure) instead of running
+# the pipeline in this process. Two dependencies, both small, both imported
+# lazily by `evidence_engine.sdk.client` through `evidence_engine._extras`, so
+# the core still installs alone and C9 stays green.
+client = [
+    "httpx>=0.28",
+    "websockets>=13",
+]
+# Corpus construction, annotation and agreement. Deliberately empty: the whole
+# of `src/corpus` imports nothing but the standard library, which is worth
+# knowing rather than worth hiding. Declared anyway so the install line is
+# stable when the evaluation work needs a statistics package.
+research = []
+# Recording a presentation from a microphone, for the pilot and for anybody
+# who wants to hear what the engine hears.
+record = [
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -93,6 +149,17 @@ ignore = [
 # structured telemetry loses its output. A command line is the one place
 # where stdout *is* the interface.
 "src/corpus/cli/*" = ["T201"]
+# Same reason: this one writes the Pilot A rehearsal transcript, which is piped
+# straight into a committed evidence file. Structured telemetry from it would
+# have nowhere to go.
+"scripts/_pilot_a_checks.py" = ["T201"]
+# The presentation runner. Its whole output is a report a person reads at a
+# terminal; there is nowhere else for it to go.
+"scripts/present.py" = ["T201"]
+# The operator command line. It prints a key the operator has to copy and a
+# configuration snapshot they have to read; routing either through structured
+# telemetry would put them in a log the person running the command never sees.
+"src/evidence_engine/bootstrap/cli.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evidence_engine", "corpus"]
@@ -107,7 +174,20 @@ warn_unreachable = true
 disallow_any_generics = true
 plugins = []
 mypy_path = "src"
-packages = ["evidence_engine", "corpus"]
+# `src` covers both packages; `scripts` is here because `present.py` builds
+# domain objects by hand and is the command the README tells a person to run.
+# It broke on a required field the whole battery could not see, because
+# nothing typed or executed it.
+files = ["src", "scripts"]
+
+[[tool.mypy.overrides]]
+# The local runtime's stack. An optional extra rather than a dependency - the
+# core installs with nothing at all - so mypy will not
+# find them in the default environment and must not fail the gate for it. The
+# adapter imports them inside a function and re-raises with an install command,
+# which is the behaviour these overrides exist to permit.
+module = ["torch.*", "transformers.*", "numpy.*", "sounddevice.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["aioboto3.*", "botocore.*"]
@@ -138,6 +218,11 @@ markers = [
     "integration: requires postgres/redis/object storage",
     "contract: validates the published REST/WebSocket contract",
     "invariant: guards a rule whose violation invalidates the service",
+    # C9. Builds a wheel and creates a virtual environment, so it costs
+    # seconds rather than milliseconds. Deselect it locally with
+    # `-m "not distribution"`; the evidence battery runs it, because the
+    # claim it defends is one of the two ADR-001 rests on.
+    "distribution: builds and installs the wheel in a clean environment",
 ]
 
 [tool.coverage.run]

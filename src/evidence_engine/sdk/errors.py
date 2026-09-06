@@ -1,0 +1,81 @@
+"""The errors an SDK consumer is expected to catch.
+
+A short, closed list, and closed on purpose. Everything a consumer branches on
+is part of the published surface, so an exception type is as expensive to
+change as a method signature - which is the argument for having few of them
+and for keeping the engine's internal failures out of this list. A consumer
+catching `TranscriptViolation` would be catching a statement about the domain's
+own invariants, and coupling their retry logic to it.
+"""
+
+from __future__ import annotations
+
+
+class OratoriaError(Exception):
+    """Base for everything this SDK raises deliberately.
+
+    A consumer that wants one `except` for the engine catches this. One that
+    sees something else has found a bug here rather than a condition to handle.
+    """
+
+
+class LocalInferenceUnavailable(OratoriaError):
+    """The model could not be loaded or could not complete a decode.
+
+    Raised by ``warmup()``, which is the only thing that can say this. A
+    passing ``hardware_preflight()`` does not rule it out: the weights can be
+    corrupt, the driver too old for the compiled kernel, or the card already
+    holding something else.
+    """
+
+
+class AudioNotUsable(OratoriaError):
+    """The recording is not in a shape the engine can time correctly.
+
+    Raised rather than resampled. The declared rate is what converts a byte
+    count into a duration, so audio decoded at one rate and timed at another
+    scales every boundary by the ratio between them - and the transcript still
+    reads correctly, which is what makes it dangerous.
+    """
+
+
+class StreamAlreadyClosed(OratoriaError):
+    """A finished or aborted session was used again."""
+
+
+class RemoteEngineUnavailable(OratoriaError):
+    """``OratoriaClient`` could not confirm the hosted engine is ready.
+
+    Raised by ``warmup()``, which is the only thing that checks this over the
+    network - the client-side twin of ``LocalInferenceUnavailable``. Carries
+    the URL and the failing check rather than a bare status code, because a
+    consumer debugging a pilot deployment needs to know *which* of
+    ``/health/ready`` and ``/v1/capabilities`` refused and what it said, not
+    only that something did. Also raised by a live session when the server
+    returns an error status this client did not expect - it never falls back
+    to a local computation instead.
+    """
+
+
+class RemoteChunkLost(OratoriaError):
+    """A refused chunk's bytes are no longer held by this client.
+
+    Raised when ``backpressure.requested`` names a ``chunk_seq`` sent long
+    enough ago that its bytes were evicted from the retained window (see
+    ``sdk.client.DEFAULT_IN_FLIGHT_WINDOW``). Distinct from a routine refusal,
+    which costs a round trip and nothing else: this one means the audio for
+    that chunk was produced by the caller and is now provably gone. Resending
+    different bytes under the refused sequence number would look like
+    backpressure handled correctly while quietly corrupting the transcript's
+    timing, which is why this is raised instead.
+    """
+
+
+class EngineNotWarmed(OratoriaError):
+    """Analysis was attempted before the model was loaded.
+
+    Raised rather than loading implicitly, because an implicit load puts a 3 GB
+    download inside a call the caller timed as a transcription - and makes
+    `hardware_preflight()`, which exists to be asked before that download,
+    advice nobody has to take.
+    """

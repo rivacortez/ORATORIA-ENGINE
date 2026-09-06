@@ -19,7 +19,6 @@ from corpus.io.elan import (
     WORDS_TIER,
     ElanError,
     read,
-    write_template,
 )
 from corpus.schema.records import (
     AnnotationPass,
@@ -31,7 +30,7 @@ from corpus.schema.records import (
 )
 from corpus.schema.validation import Severity, validate
 from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventType
-from tests.corpus.conftest import annotation, recording, word
+from tests.corpus.conftest import annotation, recording, template, word
 
 PAUSE = SpeechEventType.FILLED_PAUSE
 FILLER = SpeechEventType.LEXICAL_FILLER
@@ -172,13 +171,7 @@ def test_a_recording_refuses_an_annotation_past_its_end() -> None:
 def test_a_template_carries_the_whole_taxonomy_as_a_vocabulary(tmp_path: Path) -> None:
     """The single most valuable property: an unpublished class cannot be typed."""
     path = tmp_path / "pilot.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     content = path.read_text(encoding="utf-8")
 
     for event in SpeechEventType:
@@ -189,13 +182,7 @@ def test_a_template_carries_the_whole_taxonomy_as_a_vocabulary(tmp_path: Path) -
 
 def test_a_template_declares_the_tiers_the_reader_expects(tmp_path: Path) -> None:
     path = tmp_path / "pilot.eaf"
-    write_template(
-        path,
-        recording_id="pilot-001",
-        speaker_pseudonym="P-001",
-        annotator_id="ana",
-        media_url="pilot-001.wav",
-    )
+    template(path)
     content = path.read_text(encoding="utf-8")
 
     for tier in (WORDS_TIER, DISFLUENCY_TIER, ROLE_TIER, TEXT_TIER):
@@ -354,9 +341,21 @@ def _write_filled(path: Path) -> None:
     <HEADER MEDIA_FILE="" TIME_UNITS="milliseconds">
         <PROPERTY NAME="recording_id">pilot-001</PROPERTY>
         <PROPERTY NAME="speaker_pseudonym">P-001</PROPERTY>
+        <PROPERTY NAME="speaker_variety">es-PE</PROPERTY>
         <PROPERTY NAME="annotator_id">ana</PROPERTY>
         <PROPERTY NAME="annotation_pass">first</PROPERTY>
+        <PROPERTY NAME="schema_version">2.0.0</PROPERTY>
         <PROPERTY NAME="taxonomy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="consent_basis">written_informed</PROPERTY>
+        <PROPERTY NAME="consent_policy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="consent_granted_on">2026-09-01</PROPERTY>
+        <PROPERTY NAME="consent_covers_video">false</PROPERTY>
+        <PROPERTY NAME="microphone">Realtek(R) Audio - onboard array</PROPERTY>
+        <PROPERTY NAME="sample_rate_hz">16000</PROPERTY>
+        <PROPERTY NAME="bit_depth">16</PROPERTY>
+        <PROPERTY NAME="channels">1</PROPERTY>
+        <PROPERTY NAME="virtual_audio_bypassed">true</PROPERTY>
+        <PROPERTY NAME="room_notes">quiet office, door closed</PROPERTY>
     </HEADER>
     <TIME_ORDER>
         <TIME_SLOT TIME_SLOT_ID="ts1" TIME_VALUE="0"/>

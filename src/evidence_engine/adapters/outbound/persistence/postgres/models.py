@@ -42,6 +42,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from evidence_engine.domain.shared.provenance import MAX_SEED
+
+
+def _seed_xor_reason(name: str) -> CheckConstraint:
+    """A row records a seed or the reason it has none, never both or neither.
+
+    The same shape as ``ck_prosody_measured_xor_unavailable`` and for the same
+    reason: a nullable ``seed`` on its own is a column a query can read as zero
+    or as absent depending on who wrote the query, and NFR-015 turns on those
+    being different answers. The upper bound is folded in rather than left to
+    the domain constructor, because a direct write or a bad migration bypasses
+    every Python check and this is the one line it does not bypass.
+    """
+    return CheckConstraint(
+        f"(seed is not null and seed between 0 and {MAX_SEED} and seed_reason is null) "
+        "or (seed is null and seed_reason is not null)",
+        name=name,
+    )
+
 
 class Base(DeclarativeBase):
     """Declarative base for every table in the engine."""
@@ -167,6 +186,9 @@ class ProcessingRunRow(Base):
     completed_at_ms: Mapped[int | None] = mapped_column(BigInteger)
     #: NFR-019: an interrupted batch job resumes from completed stages.
     completed_stages: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: Role -> model version wired when the run opened. What was *running*,
+    #: as opposed to the document manifest's what *contributed*.
+    models: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class WordTokenRow(Base):
@@ -180,17 +202,73 @@ class WordTokenRow(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
-    start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    end_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    tolerance_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    calibration: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Lexical order, always present. Two columns rather than one so the pair
+    #: sorts the way the recogniser emitted words: window first, then the index
+    #: within it.
+    sequence_window_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Temporal placement, null together when the aligner could not place the
+    #: word. Null rather than zero: a zero start is a word at the beginning of
+    #: the session, which is wrong and looks entirely plausible in a dump.
+    start_ms: Mapped[int | None] = mapped_column(BigInteger)
+    end_ms: Mapped[int | None] = mapped_column(BigInteger)
+    tolerance_ms: Mapped[int | None] = mapped_column(Integer)
+    placement_unavailable_reason: Mapped[str | None] = mapped_column(String(64))
+    placement_unavailable_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Null when the recogniser reports no per-word posterior. Nullable
+    #: rather than defaulted, and paired with a reason: a 0.0 here would be
+    #: indistinguishable in a dump from a word the model actually scored
+    #: zero, which is the substitution FR-025 forbids.
+    confidence: Mapped[float | None] = mapped_column(Float)
+    calibration: Mapped[str | None] = mapped_column(String(16))
+    confidence_unavailable_reason: Mapped[str | None] = mapped_column(String(64))
+    confidence_unavailable_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: The recogniser's provenance, on every word. Tokens were the only
+    #: evidence with no provenance columns, which is why a document with
+    #: five recognised words and no disfluency recorded no model at all.
+    #: No `role` column: a token is the recogniser's by construction and
+    #: the domain constructor refuses any other.
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
     __table_args__ = (
+        Index("ix_token_run_sequence", "run_id", "sequence_window_ms", "sequence_index"),
         Index("ix_token_run_position", "run_id", "start_ms"),
-        CheckConstraint("end_ms >= start_ms", name="ck_token_interval"),
-        CheckConstraint("confidence between 0 and 1", name="ck_token_confidence"),
+        CheckConstraint("start_ms is null or end_ms >= start_ms", name="ck_token_interval"),
+        # Placement is one state or the other, enforced here rather than only
+        # in the mapper. A row with a start and a reason is uninterpretable; a
+        # row with neither has silently lost the word's position.
+        CheckConstraint(
+            "(start_ms is not null and end_ms is not null and tolerance_ms is not null "
+            "and placement_unavailable_reason is null) or "
+            "(start_ms is null and end_ms is null and tolerance_ms is null "
+            "and placement_unavailable_reason is not null)",
+            name="ck_token_placement_exactly_one_state",
+        ),
+        # The only provenance-bearing row that lacked this. `seed_from_columns`
+        # returns the seed when both are set and drops the reason without a
+        # word, so the constraint is what keeps a direct write honest.
+        _seed_xor_reason("ck_token_seed_xor_reason"),
+        CheckConstraint(
+            "confidence is null or confidence between 0 and 1",
+            name="ck_token_confidence",
+        ),
+        # Exactly one of the two states, enforced by the database rather
+        # than by the mapper. A row carrying both a score and a reason is a
+        # row nobody can interpret, and one carrying neither has silently
+        # lost the confidence it was written with.
+        CheckConstraint(
+            "(confidence is not null and calibration is not null "
+            "and confidence_unavailable_reason is null) or "
+            "(confidence is null and calibration is null "
+            "and confidence_unavailable_reason is not null)",
+            name="ck_token_confidence_exactly_one_state",
+        ),
     )
 
 
@@ -213,13 +291,22 @@ class SpeechEventRow(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     calibration: Mapped[str] = mapped_column(String(16), nullable=False)
     is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: NFR-015's fourth term, denormalized onto the event row for the same
+    #: reason the other provenance fields are: the seed a run consumed is a
+    #: property of the evidence, and reaching it through a join to the
+    #: configuration would answer a different question - what the run was
+    #: configured to use, not what it used.
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         Index("ix_speech_event_run_position", "run_id", "start_ms"),
+        _seed_xor_reason("ck_speech_event_seed_xor_reason"),
         # The role vocabulary is closed (FR-013). A constraint here means a bad
         # migration or a direct write cannot introduce a role the domain would
         # refuse, which is the one path that bypasses the domain entirely.
@@ -251,14 +338,19 @@ class VisualEventRow(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     calibration: Mapped[str] = mapped_column(String(16), nullable=False)
     is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Same pair, same rule, as ``SpeechEventRow``.
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         Index("ix_visual_event_run_position", "run_id", "start_ms"),
         CheckConstraint("confidence between 0 and 1", name="ck_visual_event_confidence"),
+        _seed_xor_reason("ck_visual_event_seed_xor_reason"),
     )
 
 
@@ -287,6 +379,17 @@ class ProsodyReadingRow(Base):
     calibration: Mapped[str | None] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(40))
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Provenance on every reading. Readings used to inherit the run's audio
+    #: provenance from whichever speech event happened to exist, and when none
+    #: did the repository fabricated `ModelVersionId("unknown")`. A prosody
+    #: estimator is its own model; its version is recorded where its output is.
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         CheckConstraint(
@@ -402,7 +505,16 @@ class EvidenceDocumentRow(Base):
 
 
 class ConfigurationSnapshotRow(Base):
-    """§8 ``ConfigurationSnapshot``. Immutable once published (US-008)."""
+    """§8 ``ConfigurationSnapshot``. Immutable once published (US-008).
+
+    The seed is a column rather than another key inside ``payload``, and the
+    reason is the immutability check in ``PostgresConfigurationStore.freeze``:
+    it compares payloads whole. Adding a key to the payload would make every
+    snapshot published before this change compare unequal to itself the next
+    time a session froze it, and ``freeze`` would refuse - so the first session
+    after deployment would fail on an existing tenant with a correct
+    configuration.
+    """
 
     __tablename__ = "configuration_snapshot"
 
@@ -411,9 +523,13 @@ class ConfigurationSnapshotRow(Base):
     pipeline_version: Mapped[str] = mapped_column(String(32), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    __table_args__ = (_seed_xor_reason("ck_configuration_seed_xor_reason"),)
 
 
 class ModelVersionRow(Base):
@@ -422,7 +538,9 @@ class ModelVersionRow(Base):
     __tablename__ = "model_version"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    modality: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: The component this artifact fills. Was `modality`, which allowed one
+    #: active audio model and could not express the canary QA-03 requires.
+    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     artifact_digest: Mapped[str] = mapped_column(String(128), nullable=False)
     dataset_version: Mapped[str] = mapped_column(String(64), nullable=False)
     approval: Mapped[str] = mapped_column(String(24), nullable=False)
@@ -431,11 +549,11 @@ class ModelVersionRow(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
-        # One active version per modality. Two would make provenance ambiguous
+        # One active version per role. Two would make provenance ambiguous
         # for every event produced while both were live.
         Index(
-            "uq_model_active_per_modality",
-            "modality",
+            "uq_model_active_per_role",
+            "role",
             unique=True,
             postgresql_where=is_active.is_(True),
         ),

@@ -11,19 +11,31 @@ corpus. That comparison is only meaningful if the baseline is chosen and pinned
 _before_ anyone has seen the test results. A baseline selected afterwards is
 selected — consciously or not — to be beatable.
 
-So two things are frozen, **at two different times**, and conflating them is
-a methodological error:
+So **four** things are frozen, at four different times, and conflating any two
+of them is a methodological error:
 
 | Frozen | When | Why then |
-|---|---|---|
-| The models and their configuration | Phase 0.5 | Before anyone has seen a result the choice could be tuned against. |
-| Their outputs over the held-out set | end of Phase 1 | The held-out set does not exist until then. Generating an output over data that is still moving produces a reference to nothing. |
+| --- | --- | --- |
+| **Model artifacts and runtime-independent decoding configuration** — identifier, revision, weights digest, mode, language, timestamp granularity | **done, Phase 0.5** | Before anyone has seen a result the choice could be tuned against. |
+| **The held-out set** | end of Phase 1 | It does not exist until then (§14.4). An output over data that is still moving is a reference to nothing. |
+| **The executable environment** — backend, container digest, Torch/CUDA build, backend dependencies | Phase 3 | None of it exists yet. There is no inference container and torch is not a dependency of this repository; a version string written now would be invented. |
+| **The baseline outputs over the held-out set** | Phase 3, **after** the environment is frozen | An output produced by an unpinned runtime cannot be regenerated. Freezing it earlier freezes a number nobody can reproduce, which is the opposite of what a frozen baseline is for. |
 
-An earlier version of this file read as though outputs could be generated now.
-They cannot. The pins live in `BASELINE_PINS.md`; the outputs are generated
-once the held-out set is frozen, stored as a versioned artifact alongside the
-digest of the input set, and the baseline is never re-run against a newer
-checkpoint of itself for the remainder of the project.
+**The order of the last two rows is the part that is easy to get wrong.** It is
+tempting to generate the baseline outputs as soon as the held-out set exists,
+at the end of Phase 1. That would produce them on whatever backend and CUDA
+build happened to be installed, and a pinned weights digest does not rescue
+that: ct2 and transformers do not produce bit-identical output from the same
+weights, and neither does one backend across two CUDA builds. The outputs wait
+for the environment.
+
+An earlier version of this file read as though outputs could be generated now,
+and then as though they were due at the end of Phase 1. Neither is right: they
+are due in Phase 3, once the environment that produces them is pinned. The pins
+themselves live in `BASELINE_PINS.md`, which carries this same table; the
+outputs are stored as a versioned artifact alongside the digest of the input
+set, and the baseline is never re-run against a newer checkpoint of itself for
+the remainder of the project.
 
 ## 2. The two baselines
 
@@ -64,11 +76,29 @@ not. Abstention rate is reported alongside precision, so the trade is visible.
 
 - **Speaker-independent.** No speaker appears in more than one partition. This
   is the single most common way a speech result becomes meaningless, and the
-  check is mechanical rather than a matter of care.
+  check is mechanical rather than a matter of care: `corpus split` assigns
+  *speakers*, never recordings, so a speaker cannot straddle a boundary by
+  construction - and re-derives the guarantee anyway, because a construction
+  survives exactly until the refactor that changes it and a model scored on
+  speakers it memorised does not look broken, it looks good.
 - The **held-out set is frozen** at the end of Phase 1 and is not touched
-  during tuning. §14.4 makes this a scientific gate.
+  during tuning. §14.4 makes this a scientific gate, and `corpus split
+  --freeze` makes it checkable: the manifest carries a SHA-256 per annotation
+  file and a digest over the whole assignment, so `corpus verify` answers
+  months later whether this is the held-out set a number was computed over,
+  whether any file changed, and whether anything was added or moved. A gate
+  enforced by everyone remembering is not a gate - the failure it exists to
+  prevent looks exactly like ordinary work while it happens.
 - Dataset cards record provenance, consent basis, recording conditions and
-  partition checksums.
+  partition checksums. The manifest is the machine-readable half; the half a
+  human writes - why these speakers, under what consent, in what room - is
+  prose and belongs beside it.
+- **Partitions are stratified, not random.** On a corpus of tens of speakers
+  with nine classes, random assignment routinely lands zero instances of a rare
+  class in held-out, and its per-class F1 is then *undefined* - a missing
+  measurement that reads as a low score. `corpus split` places the speakers
+  carrying the rarest classes first, and refuses to freeze a plan where a P0
+  class is missing from any partition.
 
 ## 5. Results
 

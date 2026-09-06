@@ -12,6 +12,7 @@ possible discovery of a missing secret.
 
 from __future__ import annotations
 
+import socket
 from enum import StrEnum
 
 from pydantic import Field, field_validator
@@ -34,12 +35,36 @@ class Backend(StrEnum):
 class RuntimeMode(StrEnum):
     """Which model runtimes to wire.
 
+    The names matter, and the previous ones did damage. ``MANAGED`` loaded
+    Whisper, and ADR-003 had written down that exact failure in advance: keep
+    Whisper a frozen research baseline, *"never as an undocumented production
+    dependency - §11.1 names that constraint explicitly, and a baseline adapter
+    that stays wired 'temporarily' is exactly how it gets violated"*. Nothing
+    in the word "managed" says "baseline", so a deployment reading the setting
+    would reasonably conclude it was running the project's model. It was
+    running the comparator the project is meant to beat.
+
     ``DETERMINISTIC`` replays scripts and produces byte-identical evidence for
     identical input, which is what QA-05's reproducibility check is built on.
+
+    ``BASELINE_WHISPER`` loads the pinned Whisper checkpoint and hears real
+    audio. It is a **research baseline**, named as one. It needs the ``managed``
+    extra and the weights downloaded, its executable environment is *not*
+    pinned - `BASELINE_PINS.md` freezes that in Phase 3 - and it detects no
+    disfluency and measures no prosody, which `/v1/capabilities` reports.
+
+    ``PROJECT_MODEL_LOCAL`` and ``PROJECT_MODEL_REMOTE`` are the streaming
+    transducer ADR-003 targets, in-process and behind an inference service.
+    Neither exists. They are named here rather than added later because a
+    deployment asking for the project model must fail with a sentence saying it
+    is not built, not silently receive the baseline - which is what a two-mode
+    enum forced.
     """
 
     DETERMINISTIC = "deterministic"
-    MANAGED = "managed"
+    BASELINE_WHISPER = "baseline_whisper"
+    PROJECT_MODEL_LOCAL = "project_model_local"
+    PROJECT_MODEL_REMOTE = "project_model_remote"
 
 
 class Settings(BaseSettings):
@@ -56,6 +81,25 @@ class Settings(BaseSettings):
     backend: Backend = Backend.MEMORY
     runtime_mode: RuntimeMode = RuntimeMode.DETERMINISTIC
 
+    #: This instance's identity on `/v1/capabilities` and every
+    #: `session.accepted` - the pilot topology is one engine per GPU
+    #: workstation, and a client talking to more than one needs to tell them
+    #: apart in its own records. Defaults to the hostname, which is a stable,
+    #: sysadmin-visible identifier on a workstation and a bad one in a
+    #: container, where it is usually a random id that changes every restart;
+    #: set this explicitly there.
+    instance_id: str = Field(default_factory=socket.gethostname)
+
+    #: Where the managed runtime runs. `cuda` unless a deployment says
+    #: otherwise; `cpu` works and is roughly thirty times slower, which is not
+    #: a configuration any reported figure should come from.
+    whisper_device: str = "cuda"
+    #: fp16 is what the pinned artifact is published as and halves residency.
+    whisper_dtype: str = "float16"
+    #: Where the weights are cached. Empty uses the library default, which
+    #: respects HF_HOME.
+    whisper_cache_dir: str = ""
+
     # -- secrets: required, no defaults ------------------------------------
 
     api_key_pepper: str = Field(
@@ -69,6 +113,19 @@ class Settings(BaseSettings):
         min_length=32,
         description="HMAC key for short-lived stream tokens (§6.1 step 2).",
     )
+
+    #: A key the process registers at startup so that a local instance can be
+    #: called - including from its own Swagger page - without a provisioning
+    #: endpoint that does not exist yet.
+    #:
+    #: This is a development affordance and is written down as one. The memory
+    #: backend keeps keys in a dict that dies with the process, so `issue-key`
+    #: run in a shell cannot put anything into a *server's* directory; without
+    #: this, the documented API is readable and uncallable. It is refused
+    #: outside a local environment and refused with the persistent backend
+    #: (`reject_a_bootstrap_key_outside_local`), because a credential arriving
+    #: through an environment variable is exactly the habit §15.2 forbids.
+    bootstrap_api_key: str = ""
 
     # -- infrastructure ----------------------------------------------------
 
@@ -109,6 +166,51 @@ class Settings(BaseSettings):
                     "the secret manager (§15.2)"
                 )
         return value
+
+    @field_validator("bootstrap_api_key")
+    @classmethod
+    def _reject_a_guessable_bootstrap_key(cls, value: str) -> str:
+        """A short bootstrap key is worse than none.
+
+        Empty means the affordance is off, which is the normal case. A value
+        that is set has to look like a key the directory would have issued -
+        prefix and entropy - so that `ENGINE_BOOTSTRAP_API_KEY=dev` cannot open
+        an instance somebody exposed to a network for five minutes.
+        """
+        if not value:
+            return value
+        if not value.startswith("oek_") or len(value) < 32:
+            raise ValueError(
+                "bootstrap_api_key must look like an issued key: the 'oek_' prefix "
+                "and at least 32 characters. Generate one with "
+                "`uv run evidence-engine issue-key`, which prints the export line."
+            )
+        return value
+
+    def reject_a_bootstrap_key_outside_local(self) -> None:
+        """Refuse the development affordance anywhere it could matter.
+
+        Called at startup rather than as a field validator because it reads
+        three fields at once, and raising here means the process dies at boot
+        with a sentence instead of serving with a credential nobody meant to
+        deploy.
+        """
+        if not self.bootstrap_api_key:
+            return
+        if self.environment != "local":
+            raise ValueError(
+                f"ENGINE_BOOTSTRAP_API_KEY is set and ENGINE_ENVIRONMENT is "
+                f"{self.environment!r}. It is a local development affordance: a key "
+                "delivered through an environment variable is what §15.2 forbids. "
+                "Issue a real key through the control plane instead."
+            )
+        if self.backend is not Backend.MEMORY:
+            raise ValueError(
+                "ENGINE_BOOTSTRAP_API_KEY is set with a persistent backend. It "
+                "registers into the in-memory directory only; against Postgres it "
+                "would be silently ignored and you would be locked out believing "
+                "you were not."
+            )
 
     def require_infrastructure(self) -> None:
         """Fail fast when a non-memory backend is selected without its URLs."""

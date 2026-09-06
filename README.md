@@ -31,23 +31,73 @@ Stated up front because most of the design exists to keep these out:
   a separate type with no numeric attribute at all — reading one raises rather
   than defaulting to zero (FR-025).
 
+## Hearing what the engine hears
+
+One command, once the extras are installed. It records a presentation, runs the
+pinned checkpoint over it, and prints what the engine derived.
+
+```bash
+uv sync --extra local --extra record
+
+# torch is installed separately, from the wheel index your card needs. This
+# workstation is a Blackwell (sm_120) and needs cu130; check yours before
+# copying the line.
+uv pip install torch==2.14.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+uv run python -c "import torch; print(torch.cuda.get_arch_list())"   # your arch must be listed
+
+uv run python scripts/present.py devices                        # pick a physical mic
+uv run python scripts/present.py record --seconds 90 --device 1 -o exposicion.wav
+uv run python scripts/present.py run exposicion.wav
+```
+
+The first run downloads about 3 GB of weights, at the revision
+`BASELINE_PINS.md` pins. Later runs load in eight seconds.
+
+**`devices` flags the virtual inputs.** NVIDIA Broadcast and Voicemeeter
+enumerate as microphones on this machine, and Broadcast's noise removal
+suppresses exactly the breath and creak that mark `cut_off` and `prolongation`.
+Recording through one would encode the enhancer's decisions as data.
+
+### What it will and will not tell you
+
+It gives a real transcript with real word boundaries, and the silent pauses it
+derives from the gaps between them using the versioned 700 ms threshold. Silent
+pause is the one taxonomy class that is *derived* rather than detected, which
+is why it is the one that works today.
+
+It reports filled pauses, false starts, repetitions, prolongations and
+self-repairs as **unavailable**, with the reason `detector_not_deployed` —
+because the detector is Phase 4 and does not exist.
+
+It used to print `0` for them and explain in the next sentence why. That was
+wrong in the exact way FR-025 exists to prevent: `0` means the detector ran and
+found none, and a reader scanning a column of numbers reads the number rather
+than the prose beside it. A clean delivery and an unmeasured one must not
+render the same.
+
+And nothing it prints is a figure. The managed runtime declares
+`environment_is_pinned = False`: the backend, container digest and Torch/CUDA
+build freeze in Phase 3, so a number from a run today is reproducible only by
+whoever ran it. Every report ends by saying that.
+
 ## Where it stands
 
 | Phase (§13) | Deliverable                                              | State                                                          |
 | ----------- | -------------------------------------------------------- | -------------------------------------------------------------- |
 | 0           | Scope, taxonomy, annotation manual, consent policy, ADRs | **deliverables done; exit criterion not met** — see below                                                       |
-| 0.5         | Experimental closure of the taxonomy                     | **tooling done; pilots not run**                                       |
+| 0.5         | Experimental closure of the **speech** taxonomy          | **tooling done; pilots not run** — visual half deferred to Phase 5      |
+| 1           | Corpus construction                                      | **tooling done; nothing recorded** — inventory, speaker-independent split, held-out freeze |
 | 2           | Platform skeleton and contracts                          | **done, exit criterion proven**                                |
 | 3           | Verbatim speech baseline                                 | not started                                                    |
 | 4           | Disfluency and prosody intelligence                      | not started                                                    |
-| 5           | Visual evidence                                          | not started                                                    |
+| 5           | Visual evidence — **and closing the visual taxonomy**    | not started                                                    |
 | 6           | Multimodal fusion                                        | deterministic correlation done; needs a corpus to evaluate     |
 | 7           | Real-time hardening                                      | bounded queues and backpressure done; load testing not started |
 | 8           | OratorIA integration                                     | not started                                                    |
 | 9           | Scientific validation                                    | not started                                                    |
 | 10          | Production readiness                                     | not started                                                    |
 
-### Phase 0 is not closed, and the distinction matters
+### Phase 0 is not closed, and it has two halves
 
 §13 separates Phase 0's *deliverables* from its *exit criterion*:
 
@@ -60,6 +110,16 @@ any recruitment starts. Recording forty speakers and then discovering that
 annotators split `false_start` from `self_repair` differently would mean a
 corpus whose per-class F1 measures annotator noise, and re-annotation costs the
 same as the original.
+
+**Phase 0.5 closes the speech half only.** The pilots never show an annotator a
+video frame, so the nine visual classes stay published and unvalidated. Closing
+them needs its own pilot, and first a decision about whether they are events at
+all — `insufficient_lighting` is a continuous condition, and the one-to-one
+matching used for agreement here is the wrong instrument for it. That work sits
+in Phase 5, where the corpus already exists and a taxonomy error costs
+re-annotating one modality rather than re-recording everything.
+`docs/corpus/PILOT_PROTOCOL.md` tracks the two halves separately, and any claim
+that "the taxonomy is validated" has to say which one.
 
 `docs/corpus/PILOT_PROTOCOL.md` has the two pilots (technical, then taxonomic),
 what gets measured and why in that order. The tooling for it is built and
@@ -147,6 +207,55 @@ contract would have found it.
 | NFR-013 — tenants are invisible to each other          | Every repository read takes a tenant in its signature; another tenant's session is _not found_, never _forbidden_.                               |
 | §14.2 — uncalibrated scores open no gates              | `Confidence.meets` refuses an uncalibrated value, so FR-022's precision gate cannot be opened by an unevaluated detector.                        |
 
+## Two ways to run it, one surface either way
+
+ADR-011: the engine embeds in a consumer's own process, or runs as a hosted
+service a consumer reaches over the network. Both shapes expose the same two
+protocols - `warmup` / `create_stream` / `aclose` on the engine, `send_audio`
+/ `receive` / `pending` / `finish` / `abort` on the session it returns - so
+code written against one runs against the other unchanged.
+
+**Embedded** (`pip install "oratoria-evidence-engine[local]"`, plus torch from
+the index your card needs):
+
+```python
+from evidence_engine import EngineConfiguration, OratoriaEngine
+
+engine = OratoriaEngine.local(EngineConfiguration(runtime="baseline_whisper"))
+await engine.warmup()
+
+stream = engine.create_stream()
+await stream.send_audio(chunk, is_final=True)
+result = await stream.finish()
+
+print(result.evidence.transcript.raw_text)
+await engine.aclose()
+```
+
+**Remote** (`pip install "oratoria-evidence-engine[client]"`) - the pilot
+topology: the engine on a GPU workstation, the consumer on CPU
+infrastructure, talking over HTTP and WebSocket:
+
+```python
+from evidence_engine import OratoriaClient
+
+client = OratoriaClient("https://engine.internal:8443", api_key)
+await client.warmup()   # confirms the remote engine is ready; never falls back
+
+stream = client.create_stream()
+await stream.send_audio(chunk, is_final=True)
+result = await stream.finish()
+
+print(result.evidence.transcript.raw_text)
+await client.aclose()
+```
+
+`stream.send_audio()` returns `False` on backpressure - the caller resends the
+same window, not a new one. See ADR-011's amendment and
+`docs/BUILD_RECORD.md` §3.21 for what changed on the server to make that safe
+over a network with no positive per-chunk acknowledgement, and for the one
+residual risk that leaves.
+
 ## Quick start
 
 ```bash
@@ -214,7 +323,8 @@ written down in `docs/governance/BRANCH_PROTECTION.md` rather than left implicit
 - `docs/governance/CONSENT_AND_RETENTION.md` — the policy the code enforces,
   with the participant-facing text
 - `docs/governance/BASELINES.md` — frozen baselines and the evaluation protocol
-- `docs/corpus/PILOT_PROTOCOL.md` — the two pilots that close Phase 0
+- `docs/corpus/PILOT_PROTOCOL.md` — the two pilots that close the speech half
+  of Phase 0, and what closing the visual half would take
 - `docs/corpus/DISAGREEMENT_LOG.md` — where annotator disagreements are recorded
 - `docs/adr/` — ADR-001 .. ADR-010
 - `docs/evidence/` — raw battery output from runs against real infrastructure

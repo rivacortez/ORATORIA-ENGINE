@@ -26,7 +26,7 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import ModelRole
 
 
 class ConfigurationError(Exception):
@@ -90,19 +90,19 @@ class InMemoryModelRegistry:
 
     def __init__(self) -> None:
         self._versions: dict[str, ModelVersion] = {}
-        self._active: dict[Modality, ModelVersionId] = {}
+        self._active: dict[ModelRole, ModelVersionId] = {}
 
     def register(self, version: ModelVersion, *, make_active: bool = False) -> None:
         self._versions[version.id.value] = version
         if make_active:
-            self._active[version.modality] = version.id
+            self._active[version.role] = version.id
 
-    async def active_for(self, modality: Modality) -> ModelVersion:
-        model_id = self._active.get(modality)
+    async def active_for(self, role: ModelRole) -> ModelVersion:
+        model_id = self._active.get(role)
         if model_id is None:
             raise ConfigurationError(
-                f"no active model for {modality.value}; the pipeline cannot run a "
-                "modality whose version it could not record (NFR-014)"
+                f"no active model for {role.value}; the pipeline cannot run a "
+                "component whose version it could not record (NFR-014)"
             )
         return self._versions[model_id.value]
 
@@ -123,7 +123,7 @@ class InMemoryModelRegistry:
 
         promoted = ModelVersion(
             id=version.id,
-            modality=version.modality,
+            role=version.role,
             artifact_digest=version.artifact_digest,
             dataset_version=version.dataset_version,
             approval=(ApprovalState.PRODUCTION if canary_percent == 100 else ApprovalState.CANARY),
@@ -131,31 +131,31 @@ class InMemoryModelRegistry:
             # The version being replaced becomes the rollback target. Recorded
             # at promotion rather than looked up during an incident, which is
             # what makes QA-03's ten-minute rollback achievable.
-            rollback_to=self._active.get(version.modality),
+            rollback_to=self._active.get(version.role),
         )
         self._versions[promoted.id.value] = promoted
-        self._active[promoted.modality] = promoted.id
+        self._active[promoted.role] = promoted.id
         return promoted
 
-    async def rollback(self, modality: Modality) -> ModelVersion:
-        current = await self.active_for(modality)
+    async def rollback(self, role: ModelRole) -> ModelVersion:
+        current = await self.active_for(role)
         if current.rollback_to is None:
             raise ConfigurationError(
-                f"no rollback target recorded for {modality.value}; "
+                f"no rollback target recorded for {role.value}; "
                 "a promotion without one cannot be undone"
             )
         target = self._versions[current.rollback_to.value]
         self._versions[current.id.value] = ModelVersion(
             id=current.id,
-            modality=current.modality,
+            role=current.role,
             artifact_digest=current.artifact_digest,
             dataset_version=current.dataset_version,
             approval=ApprovalState.ROLLED_BACK,
             metrics=current.metrics,
             rollback_to=current.rollback_to,
         )
-        self._active[modality] = target.id
+        self._active[role] = target.id
         return target
 
-    async def list_versions(self, modality: Modality) -> Sequence[ModelVersion]:
-        return tuple(v for v in self._versions.values() if v.modality is modality)
+    async def list_versions(self, role: ModelRole) -> Sequence[ModelVersion]:
+        return tuple(v for v in self._versions.values() if v.role is role)

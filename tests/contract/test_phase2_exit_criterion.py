@@ -36,7 +36,15 @@ CREATE_BODY = {
 
 #: 160 ms of PCM16 silence at 16 kHz. The deterministic runtime keys off the
 #: window position, not the samples, so real audio would tell us nothing extra.
-SILENT_CHUNK = base64.b64encode(b"\x00\x00" * 2_560).decode("ascii")
+#: One second of 16 kHz mono PCM16, sized from the declaration rather than
+#: guessed at. This was 2 560 frames - 160 ms - declared as 1 000 ms, and
+#: nothing compared the two until `AudioWindow` began refusing a declaration
+#: its payload contradicts. Derived here so the next person who changes the
+#: window length changes one number.
+WINDOW_MS = 1_000
+SAMPLE_RATE_HZ = 16_000
+FRAMES_PER_WINDOW = SAMPLE_RATE_HZ * WINDOW_MS // 1_000
+SILENT_CHUNK = base64.b64encode(b"\x00\x00" * FRAMES_PER_WINDOW).decode("ascii")
 
 
 def _envelope(session_id: str, seq: int, position_ms: int) -> dict[str, Any]:
@@ -152,7 +160,11 @@ def test_a_synthetic_session_streams_completes_is_queried_and_is_deleted(
     assert document["ranking_authority"] == "none"
     assert document["transcript"]["raw_text"].startswith("buenos dias")
     assert document["manifest"]["taxonomy_version"] == "1.0.0"
-    assert document["manifest"]["models"]["audio"] == "deterministic-speech-v1"
+    # Keyed by role now. `audio` could hold one model; the scripted runtime
+    # plays recogniser, detector and prosody estimator and all three are
+    # recorded, which a modality-keyed manifest collapsed into one entry.
+    assert document["manifest"]["models"]["recogniser"] == "deterministic-speech-v1"
+    assert document["manifest"]["models"]["visual_estimator"] == "deterministic-vision-v1"
 
     # 4. Delete -----------------------------------------------------------
     deleted = client.delete(f"/v1/sessions/{session_id}/evidence", headers=auth)

@@ -20,6 +20,11 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from evidence_engine.adapters.inbound.rest.schemas import ErrorBody
+from evidence_engine.application.commands.administer_keys import (
+    ApplicationNotFound,
+    KeyNotFound,
+    UnissuableScope,
+)
 from evidence_engine.application.errors import (
     ApplicationError,
     BackpressureRequired,
@@ -45,6 +50,12 @@ _MAPPING: tuple[tuple[type[Exception], int, str], ...] = (
     (NotAuthenticated, status.HTTP_401_UNAUTHORIZED, "not_authenticated"),
     (NotAuthorized, status.HTTP_403_FORBIDDEN, "insufficient_scope"),
     (SessionNotFound, status.HTTP_404_NOT_FOUND, "session_not_found"),
+    (ApplicationNotFound, status.HTTP_404_NOT_FOUND, "application_not_found"),
+    (KeyNotFound, status.HTTP_404_NOT_FOUND, "api_key_not_found"),
+    # 400 rather than 422. The body parses and is well formed; what is refused
+    # is the privilege it asks for, and pointing a portal at its serializer
+    # would send somebody looking in the wrong place entirely.
+    (UnissuableScope, status.HTTP_400_BAD_REQUEST, "unissuable_scope"),
     (ResultNotReady, status.HTTP_409_CONFLICT, "result_not_ready"),
     (SessionBusy, status.HTTP_409_CONFLICT, "session_busy"),
     (QuotaExceeded, status.HTTP_429_TOO_MANY_REQUESTS, "quota_exceeded"),

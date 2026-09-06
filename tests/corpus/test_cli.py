@@ -15,6 +15,7 @@ import pytest
 
 from corpus.cli.main import main
 from evidence_engine.domain.shared.taxonomy import SpeechEventType
+from tests.corpus.conftest import TEMPLATE_FLAGS
 
 
 def _template(tmp_path: Path, annotator: str) -> Path:
@@ -32,6 +33,7 @@ def _template(tmp_path: Path, annotator: str) -> Path:
                 annotator,
                 "--media",
                 "pilot-001.wav",
+                *TEMPLATE_FLAGS,
             ]
         )
         == 0
@@ -51,7 +53,18 @@ def _annotated(tmp_path: Path, annotator: str, *, offset_ms: int, event: str) ->
         <PROPERTY NAME="speaker_pseudonym">P-001</PROPERTY>
         <PROPERTY NAME="annotator_id">{annotator}</PROPERTY>
         <PROPERTY NAME="annotation_pass">first</PROPERTY>
+        <PROPERTY NAME="schema_version">2.0.0</PROPERTY>
         <PROPERTY NAME="taxonomy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="speaker_variety">es-PE</PROPERTY>
+        <PROPERTY NAME="consent_basis">written_informed</PROPERTY>
+        <PROPERTY NAME="consent_policy_version">1.0.0</PROPERTY>
+        <PROPERTY NAME="consent_granted_on">2026-09-01</PROPERTY>
+        <PROPERTY NAME="consent_covers_video">false</PROPERTY>
+        <PROPERTY NAME="microphone">Realtek(R) Audio - onboard array</PROPERTY>
+        <PROPERTY NAME="sample_rate_hz">16000</PROPERTY>
+        <PROPERTY NAME="bit_depth">16</PROPERTY>
+        <PROPERTY NAME="channels">1</PROPERTY>
+        <PROPERTY NAME="virtual_audio_bypassed">true</PROPERTY>
     </HEADER>
     <TIME_ORDER>
         <TIME_SLOT TIME_SLOT_ID="ts1" TIME_VALUE="0"/>

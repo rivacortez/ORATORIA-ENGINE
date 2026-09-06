@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from evidence_engine.application.commands.administer_keys import AdministerApiKeys
 from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
@@ -65,6 +66,13 @@ class RuntimeProfile:
     runtime_mode: str
     max_queue_depth: int
     stream_lease_ttl_seconds: int
+    #: This process's identity, published on `/v1/capabilities` and on every
+    #: `session.accepted`. A pilot running the engine on more than one GPU
+    #: workstation needs to attribute a result to the machine that produced
+    #: it - `instance_id` names it, `hostname` is the operating-system answer
+    #: regardless of what `instance_id` was configured to.
+    instance_id: str
+    hostname: str
 
 
 class EngineApi(Protocol):
@@ -77,6 +85,12 @@ class EngineApi(Protocol):
     """
 
     profile: RuntimeProfile
+    #: Seconds the startup warm-up decode took, or `None` before it has
+    #: completed. `/health/ready` refuses traffic while this is `None`: a
+    #: wired recogniser that has never actually decoded is not yet evidence
+    #: that inference works here, by the same reasoning `sdk.engine.warmup()`
+    #: is a separate method from `hardware_preflight()` (ADR-011).
+    speech_warm_seconds: float | None
 
     # Ports a transport needs to build a per-connection pipeline or to
     # authenticate before any use case is reachable.
@@ -101,3 +115,7 @@ class EngineApi(Protocol):
     read_session: ReadSession
     read_result: ReadResult
     read_capabilities: ReadCapabilities
+    #: Provisioning. Reachable only with `Scope.ADMIN`, which the use case
+    #: checks - the transport does not, deliberately, so the rule holds on
+    #: every entry point rather than on the one that remembered it.
+    administer_keys: AdministerApiKeys

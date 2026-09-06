@@ -38,3 +38,12 @@ mlruns/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Recordings. A presentation is participant data: it carries a voice, it is
+# covered by a consent record, and §14.4 says research exports are
+# pseudonymised. Nothing that holds a person speaking belongs in git.
+*.wav
+*.flac
+*.mp4
+*.webm
+recordings/

@@ -41,6 +41,7 @@ from evidence_engine.application.workflows.streaming import (
 )
 from evidence_engine.bootstrap.container import default_configuration
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
+from evidence_engine.domain.sessions.sequencing import ChunkVerdict
 from evidence_engine.domain.shared.identifiers import RunId, SessionId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason
 from evidence_engine.domain.shared.provenance import Modality
@@ -48,7 +49,15 @@ from evidence_engine.domain.shared.timeline import Interval
 
 pytestmark = pytest.mark.contract
 
-SILENCE = b"\x00\x00" * 2_560
+#: One second of 16 kHz mono PCM16, sized from the declaration rather than
+#: guessed at. This was 2 560 frames - 160 ms - declared as 1 000 ms, and
+#: nothing compared the two until `AudioWindow` began refusing a declaration
+#: its payload contradicts. Derived here so the next person who changes the
+#: window length changes one number.
+WINDOW_MS = 1_000
+SAMPLE_RATE_HZ = 16_000
+FRAMES_PER_WINDOW = SAMPLE_RATE_HZ * WINDOW_MS // 1_000
+SILENCE = b"\x00\x00" * FRAMES_PER_WINDOW
 
 
 def _coordinator(
@@ -165,6 +174,31 @@ async def test_a_speech_failure_does_not_fabricate_events_from_video(
     assert state.visual_events
 
 
+async def test_captured_ms_advances_even_when_the_speech_modality_degrades(
+    visual_script: VisualScript,
+) -> None:
+    """S2: ``captured_audio_ms`` is set before the runtime is asked to decode.
+
+    A run whose recogniser fails on every window still ingested audio, and a
+    caller reading ``session.completed`` needs to tell "we heard everything
+    and the model produced nothing" from "we heard nothing at all" -
+    ``finalized_through_ms`` alone cannot: it reads 0 in both cases.
+    """
+    failing_speech = SpeechScript(fail_after_window=0)
+    coordinator, _, state = _coordinator(failing_speech, visual_script)
+
+    await coordinator.ingest_audio(
+        0,
+        AudioWindow(
+            session_position_ms=0, duration_ms=1_000, sample_rate_hz=16_000, samples=SILENCE
+        ),
+    )
+
+    assert Modality.AUDIO in state.degraded_modalities
+    assert state.transcript.raw_text() == ""
+    assert state.captured_audio_ms == 1_000
+
+
 # ---------------------------------------------------------------------------
 # FR-010 - bounded queues and backpressure
 # ---------------------------------------------------------------------------
@@ -204,7 +238,40 @@ async def test_backpressure_is_signalled_before_the_queue_is_exceeded(
         )
 
     assert caught.value.queue_depth == 1
-    assert channel.backpressure_requests == [(state.session_id, 1)]
+    # `0` is the refused chunk's own sequence, not merely the queue depth -
+    # the caller needs it to know exactly which window to resend.
+    assert channel.backpressure_requests == [(state.session_id, 1, 0)]
+
+
+async def test_a_refused_chunk_is_not_marked_seen_and_can_be_resent(
+    speech_script: SpeechScript, visual_script: VisualScript
+) -> None:
+    """S1: the ledger must meet a resent, refused chunk for the first time.
+
+    The old order called `offer()` before the admission check, so a refused
+    chunk was already recorded as accepted. The caller's only sane retry - the
+    identical `chunk_seq` - then came back `DUPLICATE` and was silently
+    dropped: an explicit backpressure signal on the wire, and an invisible
+    loss underneath it. Checking admission first is what this test would have
+    caught: reverting the reorder in `_admit` turns it red.
+    """
+    coordinator, _, state = _coordinator(speech_script, visual_script, max_queue_depth=1)
+    state.in_flight = 1
+    window = AudioWindow(
+        session_position_ms=0, duration_ms=1_000, sample_rate_hz=16_000, samples=SILENCE
+    )
+
+    with pytest.raises(BackpressureRequired):
+        await coordinator.ingest_audio(0, window)
+
+    assert state.audio_chunks.highest_seen == -1, "a refused chunk must not be marked seen"
+
+    # Room exists now; the caller resends the identical window.
+    state.in_flight = 0
+    verdict = await coordinator.ingest_audio(0, window)
+
+    assert verdict is ChunkVerdict.ACCEPTED
+    assert state.audio_chunks.highest_seen == 0
 
 
 async def test_backpressure_raises_rather_than_dropping_the_chunk(

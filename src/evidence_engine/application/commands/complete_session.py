@@ -13,10 +13,22 @@ co-occurrence message for the same reason: a correlation between two events one
 of which is later revised would be a claim the engine has to withdraw, which
 §6.1 step 9 does not allow.
 
-*The document is assembled and checked.* ``assert_carries_no_ranking`` walks the
-serialized payload before it is stored. That check is redundant with the
-domain's ``ClassVar`` in the normal case and exists for the abnormal one: a
-model runtime that forwards its own ordering inside an event payload.
+*The document is assembled in canonical time order.* Events arrive keyed by id
+and a streaming runtime may revise one long after a later one arrived, so
+``state.speech_events.values()`` is in arrival order, not clock order. FR-029
+makes that difference matter: a consumer reads position 0 as "first", so the
+sequence order is a claim, and the only order that claims nothing is the
+recording's own. Sorting here rather than in the serializer means the stored
+rows, the streamed messages and the published document cannot disagree.
+
+This function does *not* walk the serialized payload, and an earlier version
+that claimed to did not either - it built a two-key stub of its own and walked
+that, which could not fail, because the code building it only ever wrote ``id``
+and ``type``. The application layer cannot walk the real payload: the
+serializer lives in the inbound REST adapter and contract C6 forbids importing
+it from here. The walk therefore lives where the payload actually exists,
+in ``PostgresEvidenceRepository.store_document``, and the ordering half lives in
+``EvidenceDocument.__post_init__`` where every construction path meets.
 """
 
 from __future__ import annotations
@@ -42,7 +54,6 @@ from evidence_engine.application.workflows.streaming import StreamingState
 from evidence_engine.domain.evidence.document import (
     EvidenceDocument,
     ProvenanceManifest,
-    assert_carries_no_ranking,
 )
 from evidence_engine.domain.quality.assessment import (
     QualityAssessment,
@@ -53,9 +64,16 @@ from evidence_engine.domain.sessions.session import AnalysisSession
 from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.identifiers import ModelVersionId, SessionId
 from evidence_engine.domain.shared.measurement import Measured
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Provenance,
+    ProvenanceViolation,
+)
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
+from evidence_engine.domain.speech_events.prosody import ProsodyReading
+from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
 
@@ -102,16 +120,27 @@ class CompleteSession:
 
         quality = self._with_transport_quality(state, session, wall_ms)
 
-        speech_events = tuple(event.finalize() for event in state.speech_events.values())
-        visual_events = tuple(event.finalize() for event in state.visual_events.values())
+        speech_events = tuple(
+            sorted((event.finalize() for event in state.speech_events.values()), key=_time_order)
+        )
+        visual_events = tuple(
+            sorted((event.finalize() for event in state.visual_events.values()), key=_time_order)
+        )
 
         cooccurrences = fuse(speech_events, visual_events, configuration.fusion_window)
+
+        # No more audio and no more passes: whatever is still provisional is
+        # final text. `finalize_remaining` said so in its docstring and had no
+        # caller, so a session that ended mid-window published its tail as
+        # revisable - which a consumer is entitled to keep re-rendering as
+        # such. The events above get the same treatment two statements up.
+        transcript = state.transcript.finalize_remaining()
 
         bundle = EvidenceBundle(
             run_id=state.run_id,
             session_id=session_id,
             tenant=caller.tenant,
-            transcript=state.transcript,
+            transcript=transcript,
             quality=quality,
             speech_events=speech_events,
             visual_events=visual_events,
@@ -127,7 +156,7 @@ class CompleteSession:
                 schema_version=configuration.schema_version,
                 taxonomy_version=configuration.taxonomy_version,
                 configuration=configuration.id,
-                models=_models_used(speech_events, visual_events),
+                models=_models_used(transcript, speech_events, visual_events, tuple(state.prosody)),
             ),
             transcript=bundle.transcript,
             quality=bundle.quality,
@@ -135,14 +164,6 @@ class CompleteSession:
             visual_events=bundle.visual_events,
             prosody=bundle.prosody,
             cooccurrences=bundle.cooccurrences,
-        )
-
-        # Belt and braces before anything leaves this process (FR-029).
-        assert_carries_no_ranking(
-            {
-                "speech_events": [{"id": e.id.value, "type": e.type.value} for e in speech_events],
-                "visual_events": [{"id": e.id.value, "type": e.type.value} for e in visual_events],
-            }
         )
 
         await self._evidence.store(bundle)
@@ -219,6 +240,22 @@ class CompleteSession:
         return state.quality.extended(assessments)
 
 
+def _time_order(event: SpeechEvent | VisualEvent) -> tuple[int, int, str]:
+    """The canonical published order for a sequence of events.
+
+    The same key ``transcript.build`` imposes on word tokens, reused rather
+    than reinvented: two orderings that can disagree are worse than one, and
+    the disagreement would surface as a transcript and an event list that tell
+    different stories about which came first.
+
+    The tie-break on the id matters. Two events can share a start - a window
+    seam produces overlapping hypotheses - and without it the published order
+    of those two would follow dictionary insertion, which NFR-015 requires to
+    be reproducible and which arrival timing decides.
+    """
+    return event.interval.start.ms, event.interval.end.ms, event.id.value
+
+
 def _loss_ratio(missing: int, highest_seen: int) -> float:
     """Fraction of expected chunks that never arrived."""
     expected = highest_seen + 1
@@ -228,20 +265,54 @@ def _loss_ratio(missing: int, highest_seen: int) -> float:
 
 
 def _models_used(
-    speech_events: tuple[SpeechEvent, ...], visual_events: tuple[VisualEvent, ...]
-) -> dict[Modality, ModelVersionId]:
-    """Collect the model version each modality actually contributed under.
+    transcript: Transcript,
+    speech_events: tuple[SpeechEvent, ...],
+    visual_events: tuple[VisualEvent, ...],
+    prosody: tuple[ProsodyReading, ...],
+) -> dict[ModelRole, ModelVersionId]:
+    """Collect the model version each *role* actually contributed under.
 
-    Read off the events rather than from the registry, because during a canary
-    the registry's answer and the answer for *these* events differ - and
-    NFR-014 is about these events.
+    Read off the evidence rather than from the registry, because during a
+    canary the registry's answer and the answer for *this* evidence differ -
+    and NFR-014 is about this evidence.
+
+    Three things this used to get wrong, each of which produced a manifest
+    that read as complete.
+
+    *It read events only.* Tokens carried no provenance and prosody was
+    never consulted, so a run that produced a transcript and no disfluency
+    recorded no model at all: `models: {}` on five recognised words.
+
+    *It was keyed by modality.* One audio model could be recorded. The
+    contextual classifier QA-03 requires to be canaried independently of
+    the recogniser had nowhere to go.
+
+    *It used `setdefault`.* The second model in a modality was dropped
+    without a trace. Now two versions for one role in one run is refused:
+    a canary is *between* runs, and within a run it is a bug that would
+    otherwise be recorded as whichever happened to come first.
     """
-    # Iterated separately rather than as one concatenated sequence: the two
-    # event types share no base beyond `object`, so a merged loop would erase
-    # the very `provenance` attribute this function reads.
-    models: dict[Modality, ModelVersionId] = {}
+    models: dict[ModelRole, ModelVersionId] = {}
+
+    def note(provenance: Provenance) -> None:
+        seen = models.get(provenance.role)
+        if seen is not None and seen != provenance.model_version:
+            raise ProvenanceViolation(
+                f"two versions of {provenance.role.value} in one run: {seen.value} and "
+                f"{provenance.model_version.value}. A canary runs between sessions, "
+                "not inside one; this document cannot say which model produced what"
+            )
+        models[provenance.role] = provenance.model_version
+
+    # Iterated separately rather than as one concatenated sequence: the
+    # types share no base beyond `object`, so a merged loop would erase the
+    # very `provenance` attribute this function reads.
+    for token in transcript.tokens:
+        note(token.provenance)
     for speech_event in speech_events:
-        models.setdefault(speech_event.provenance.modality, speech_event.provenance.model_version)
+        note(speech_event.provenance)
     for visual_event in visual_events:
-        models.setdefault(visual_event.provenance.modality, visual_event.provenance.model_version)
+        note(visual_event.provenance)
+    for reading in prosody:
+        note(reading.provenance)
     return models

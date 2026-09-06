@@ -14,18 +14,29 @@ value being compared is derived from attacker-supplied input either way.
 from __future__ import annotations
 
 import hmac
+import secrets
 from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from evidence_engine.adapters.outbound.persistence.identity import hash_secret
+from evidence_engine.adapters.outbound.persistence.identity import (
+    KEY_PREFIX,
+    generate_secret,
+    hash_secret,
+)
 from evidence_engine.adapters.outbound.persistence.postgres import models
 from evidence_engine.adapters.outbound.persistence.postgres.engine import unit_of_work
+from evidence_engine.adapters.outbound.persistence.postgres.mapping import (
+    seed_from_columns,
+    seed_to_columns,
+)
 from evidence_engine.application.ports.platform import (
+    ApiKeyDescriptor,
     ApprovalState,
     AuthenticatedCaller,
+    ClientApplicationRecord,
     ConfigurationSnapshot,
     ModelVersion,
     Scope,
@@ -39,7 +50,7 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import ModelRole, SemanticVersion
 from evidence_engine.domain.visual_events.calibration import VisualCalibration
 
 
@@ -113,6 +124,143 @@ class PostgresApiKeyDirectory:
         return bool(result.rowcount)
 
 
+class PostgresApiKeyAdministration:
+    """``ApiKeyAdministration`` over PostgreSQL (FR-002, US-006).
+
+    This is the half of key management that did not exist. The directory above
+    could authenticate and revoke, so a deployment could refuse a key and could
+    never create one - the published API was uncallable by anybody who had not
+    been handed a credential that nothing could produce.
+
+    Separate class from ``PostgresApiKeyDirectory`` for the reason on the port:
+    the two need different database privileges, and merging them would make a
+    read-only authenticating replica impossible to express.
+    """
+
+    def __init__(
+        self, factory: async_sessionmaker[AsyncSession], pepper: str, clock_epoch_ms: ClockRead
+    ) -> None:
+        self._factory = factory
+        self._pepper = pepper
+        self._now = clock_epoch_ms
+
+    async def create_application(self, tenant: TenantId, name: str) -> ClientApplicationRecord:
+        row = models.ClientApplicationRow(
+            id=f"app_{secrets.token_hex(8)}",
+            tenant_id=tenant.value,
+            name=name,
+            status="active",
+        )
+        async with unit_of_work(self._factory) as db:
+            db.add(row)
+        return ClientApplicationRecord(
+            id=ApplicationId(row.id), tenant=tenant, name=name, status="active"
+        )
+
+    async def list_applications(self, tenant: TenantId) -> tuple[ClientApplicationRecord, ...]:
+        async with self._factory() as db:
+            rows = await db.scalars(
+                select(models.ClientApplicationRow)
+                .where(models.ClientApplicationRow.tenant_id == tenant.value)
+                .order_by(models.ClientApplicationRow.created_at)
+            )
+            return tuple(_application_from(row) for row in rows)
+
+    async def get_application(self, application: ApplicationId) -> ClientApplicationRecord | None:
+        async with self._factory() as db:
+            row = await db.get(models.ClientApplicationRow, application.value)
+        return None if row is None else _application_from(row)
+
+    async def issue(
+        self,
+        application: ApplicationId,
+        tenant: TenantId,
+        scopes: frozenset[Scope],
+        expires_at_ms: int | None = None,
+    ) -> tuple[str, ApiKeyDescriptor]:
+        """Mint a key. The plaintext is returned once and stored nowhere."""
+        secret = generate_secret()
+        row = models.ApiKeyRow(
+            id=str(ApiKeyId.generate().value),
+            application_id=application.value,
+            tenant_id=tenant.value,
+            hashed_secret=hash_secret(secret, self._pepper),
+            prefix=secret[: len(KEY_PREFIX) + 6],
+            scopes=sorted(scope.value for scope in scopes),
+            expires_at_ms=expires_at_ms,
+        )
+        async with unit_of_work(self._factory) as db:
+            db.add(row)
+        return secret, _descriptor_from(row)
+
+    async def list_keys(self, application: ApplicationId) -> tuple[ApiKeyDescriptor, ...]:
+        """Every key of an application, revoked ones included.
+
+        Revoked keys stay in the list because a dashboard that hid them would
+        make a revocation look like a deletion, and US-006's guarantee is that
+        the credential stops working - not that its existence is forgotten. An
+        operator investigating an incident needs to see the key that was used.
+        """
+        async with self._factory() as db:
+            rows = await db.scalars(
+                select(models.ApiKeyRow)
+                .where(models.ApiKeyRow.application_id == application.value)
+                .order_by(models.ApiKeyRow.id)
+            )
+            return tuple(_descriptor_from(row) for row in rows)
+
+    async def revoke(self, key_id: ApiKeyId, at_ms: int) -> ApiKeyDescriptor | None:
+        async with unit_of_work(self._factory) as db:
+            row = await db.get(models.ApiKeyRow, key_id.value)
+            if row is None:
+                return None
+            # Only stamp an unrevoked key. Re-stamping would move the moment the
+            # credential stopped working to whenever somebody last pressed the
+            # button, which is the one fact an incident review needs from it.
+            if row.revoked_at_ms is None:
+                row.revoked_at_ms = at_ms
+            return _descriptor_from(row)
+
+
+def _application_from(row: models.ClientApplicationRow) -> ClientApplicationRecord:
+    return ClientApplicationRecord(
+        id=ApplicationId(row.id),
+        tenant=TenantId(row.tenant_id),
+        name=row.name,
+        status=row.status,
+    )
+
+
+def _descriptor_from(row: models.ApiKeyRow) -> ApiKeyDescriptor:
+    """Never carries ``hashed_secret``. See ``ApiKeyDescriptor``.
+
+    Unknown scope strings are dropped rather than raising. A row written by a
+    later version can name a scope this build has never heard of, and §7.4's
+    rule that unknown enum values must not crash a consumer applies to our own
+    database as much as to the wire - a listing endpoint that raised would take
+    the dashboard down during exactly a rollback.
+    """
+    return ApiKeyDescriptor(
+        key_id=ApiKeyId(row.id),
+        application=ApplicationId(row.application_id),
+        tenant=TenantId(row.tenant_id),
+        prefix=row.prefix,
+        scopes=frozenset(_known_scopes(row.scopes)),
+        expires_at_ms=row.expires_at_ms,
+        revoked_at_ms=row.revoked_at_ms,
+    )
+
+
+def _known_scopes(values: Sequence[str]) -> list[Scope]:
+    known = []
+    for value in values:
+        try:
+            known.append(Scope(value))
+        except ValueError:
+            continue
+    return known
+
+
 class PostgresConfigurationStore:
     """Immutable, versioned snapshots bound to sessions (US-008)."""
 
@@ -155,6 +303,7 @@ class PostgresConfigurationStore:
         async with unit_of_work(self._factory) as db:
             existing = await db.get(models.ConfigurationSnapshotRow, snapshot.id.value)
             payload = _snapshot_to_json(snapshot)
+            seed, seed_reason = seed_to_columns(snapshot.seed)
             if existing is None:
                 db.add(
                     models.ConfigurationSnapshotRow(
@@ -163,9 +312,20 @@ class PostgresConfigurationStore:
                         pipeline_version=str(snapshot.pipeline_version),
                         schema_version=str(snapshot.schema_version),
                         payload=payload,
+                        seed=seed,
+                        seed_reason=seed_reason,
                     )
                 )
-            elif existing.payload != payload:
+            # The seed is compared alongside the payload rather than left out
+            # of the immutability check. It lives in its own columns, so a
+            # payload comparison on its own would let one published id mean two
+            # different reproduction claims - which is the exact thing US-008
+            # forbids, and the harder half of it to notice.
+            elif (existing.payload, existing.seed, existing.seed_reason) != (
+                payload,
+                seed,
+                seed_reason,
+            ):
                 raise ControlPlaneError(
                     f"configuration {snapshot.id} is already published with different "
                     "content; published versions are immutable (US-008)"
@@ -180,18 +340,18 @@ class PostgresModelRegistry:
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = factory
 
-    async def active_for(self, modality: Modality) -> ModelVersion:
+    async def active_for(self, role: ModelRole) -> ModelVersion:
         async with self._factory() as db:
             row = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == modality.value,
+                    models.ModelVersionRow.role == role.value,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
         if row is None:
             raise ControlPlaneError(
-                f"no active model for {modality.value}; the pipeline cannot run a "
-                "modality whose version it could not record (NFR-014)"
+                f"no active model for {role.value}; the pipeline cannot run a "
+                "component whose version it could not record (NFR-014)"
             )
         return _row_to_model(row)
 
@@ -216,7 +376,7 @@ class PostgresModelRegistry:
 
             previous = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == row.modality,
+                    models.ModelVersionRow.role == row.role,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
@@ -226,7 +386,7 @@ class PostgresModelRegistry:
                 # what makes QA-03's ten-minute rollback achievable.
                 row.rollback_to = previous.id
                 # Flushed before the new version is activated. The partial
-                # unique index allows one active row per modality and is not
+                # unique index allows one active row per role and is not
                 # deferrable, so leaving both updates to a single flush lets
                 # the driver order them the wrong way round and violate it.
                 # Found by running this against a real PostgreSQL; SQLite and
@@ -242,19 +402,19 @@ class PostgresModelRegistry:
             promoted = _row_to_model(row)
         return promoted
 
-    async def rollback(self, modality: Modality) -> ModelVersion:
+    async def rollback(self, role: ModelRole) -> ModelVersion:
         async with unit_of_work(self._factory) as db:
             current = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == modality.value,
+                    models.ModelVersionRow.role == role.value,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
             if current is None:
-                raise ControlPlaneError(f"no active model for {modality.value}")
+                raise ControlPlaneError(f"no active model for {role.value}")
             if current.rollback_to is None:
                 raise ControlPlaneError(
-                    f"no rollback target recorded for {modality.value}; "
+                    f"no rollback target recorded for {role.value}; "
                     "a promotion without one cannot be undone"
                 )
             target = await db.get(models.ModelVersionRow, current.rollback_to)
@@ -270,13 +430,11 @@ class PostgresModelRegistry:
             restored = _row_to_model(target)
         return restored
 
-    async def list_versions(self, modality: Modality) -> Sequence[ModelVersion]:
+    async def list_versions(self, role: ModelRole) -> Sequence[ModelVersion]:
         async with self._factory() as db:
             rows = (
                 await db.scalars(
-                    select(models.ModelVersionRow).where(
-                        models.ModelVersionRow.modality == modality.value
-                    )
+                    select(models.ModelVersionRow).where(models.ModelVersionRow.role == role.value)
                 )
             ).all()
         return tuple(_row_to_model(row) for row in rows)
@@ -321,6 +479,7 @@ def _row_to_snapshot(row: models.ConfigurationSnapshotRow) -> ConfigurationSnaps
         fusion_window=FusionWindow(
             width_ms=int(payload["fusion_window_ms"]), configuration=snapshot_id
         ),
+        seed=seed_from_columns(row.seed, row.seed_reason),
         speech_thresholds=dict(payload.get("speech_thresholds", {})),
         visual_thresholds=dict(payload.get("visual_thresholds", {})),
         silence_threshold_ms=int(payload.get("silence_threshold_ms", 700)),
@@ -331,7 +490,7 @@ def _row_to_snapshot(row: models.ConfigurationSnapshotRow) -> ConfigurationSnaps
 def _row_to_model(row: models.ModelVersionRow) -> ModelVersion:
     return ModelVersion(
         id=ModelVersionId(row.id),
-        modality=Modality(row.modality),
+        role=ModelRole(row.role),
         artifact_digest=row.artifact_digest,
         dataset_version=row.dataset_version,
         approval=ApprovalState(row.approval),

@@ -34,7 +34,12 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, Provenance, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Provenance,
+    SemanticVersion,
+)
 from evidence_engine.domain.shared.taxonomy import (
     TAXONOMY_VERSION,
     ContextualRole,
@@ -60,6 +65,7 @@ def configuration() -> ConfigurationSnapshotId:
 def audio_provenance(configuration: ConfigurationSnapshotId) -> Provenance:
     return Provenance(
         modality=Modality.AUDIO,
+        role=ModelRole.RECOGNISER,
         model_version=ModelVersionId("asr-baseline-0001"),
         taxonomy_version=TAXONOMY_VERSION,
         configuration=configuration,
@@ -71,6 +77,7 @@ def audio_provenance(configuration: ConfigurationSnapshotId) -> Provenance:
 def video_provenance(configuration: ConfigurationSnapshotId) -> Provenance:
     return Provenance(
         modality=Modality.VIDEO,
+        role=ModelRole.VISUAL_ESTIMATOR,
         model_version=ModelVersionId("vision-baseline-0001"),
         taxonomy_version=TAXONOMY_VERSION,
         configuration=configuration,

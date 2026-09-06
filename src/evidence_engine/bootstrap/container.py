@@ -14,7 +14,8 @@ this port?" stops having an answer you can read.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import socket
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -35,13 +36,22 @@ from evidence_engine.adapters.outbound.model_runtime.deterministic import (
     SpeechScript,
     VisualScript,
 )
+from evidence_engine.adapters.outbound.model_runtime.whisper import (
+    WhisperSettings,
+    WhisperSpeechRuntime,
+)
 from evidence_engine.adapters.outbound.object_storage.in_memory import InMemoryMediaStore
 from evidence_engine.adapters.outbound.object_storage.s3 import S3MediaStore
 from evidence_engine.adapters.outbound.persistence.configuration import (
     InMemoryConfigurationStore,
     InMemoryModelRegistry,
 )
-from evidence_engine.adapters.outbound.persistence.identity import InMemoryApiKeyDirectory
+from evidence_engine.adapters.outbound.persistence.identity import (
+    ApiKeyRecord,
+    InMemoryApiKeyAdministration,
+    InMemoryApiKeyDirectory,
+    hash_secret,
+)
 from evidence_engine.adapters.outbound.persistence.in_memory import (
     InMemoryAuditLog,
     InMemoryEvidenceRepository,
@@ -49,6 +59,7 @@ from evidence_engine.adapters.outbound.persistence.in_memory import (
     InMemorySessionRepository,
 )
 from evidence_engine.adapters.outbound.persistence.postgres.control_plane import (
+    PostgresApiKeyAdministration,
     PostgresApiKeyDirectory,
     PostgresConfigurationStore,
     PostgresModelRegistry,
@@ -69,6 +80,7 @@ from evidence_engine.adapters.outbound.persistence.tokens import HmacStreamToken
 from evidence_engine.adapters.outbound.telemetry.clock import SystemClock
 from evidence_engine.adapters.outbound.telemetry.structured import StructlogTelemetry
 from evidence_engine.application.api import RuntimeProfile
+from evidence_engine.application.commands.administer_keys import AdministerApiKeys
 from evidence_engine.application.commands.capture_control import CaptureControl
 from evidence_engine.application.commands.complete_session import CompleteSession
 from evidence_engine.application.commands.create_session import CreateSession
@@ -79,6 +91,7 @@ from evidence_engine.application.commands.open_run import (
 )
 from evidence_engine.application.ports.clock import Clock
 from evidence_engine.application.ports.platform import (
+    ApiKeyAdministration,
     ApiKeyDirectory,
     ApprovalState,
     ConfigurationSnapshot,
@@ -86,6 +99,7 @@ from evidence_engine.application.ports.platform import (
     ModelRegistry,
     ModelVersion,
     QuotaGuard,
+    Scope,
     Telemetry,
 )
 from evidence_engine.application.ports.repositories import (
@@ -109,8 +123,19 @@ from evidence_engine.domain.evidence.cooccurrence import (
     DEFAULT_FUSION_WINDOW_MS,
     FusionWindow,
 )
-from evidence_engine.domain.shared.identifiers import ConfigurationSnapshotId, ModelVersionId
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.identifiers import (
+    ApiKeyId,
+    ApplicationId,
+    ConfigurationSnapshotId,
+    ModelVersionId,
+    TenantId,
+)
+from evidence_engine.domain.shared.provenance import (
+    ModelRole,
+    SemanticVersion,
+    Unseeded,
+    UnseededReason,
+)
 from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
 
 #: The published contract version this build speaks. Bumped by hand, because
@@ -143,6 +168,11 @@ class Container:
     configuration: ConfigurationStore
     registry: ModelRegistry
     api_keys: ApiKeyDirectory
+    #: The provisioning port, exposed here and deliberately NOT on `EngineApi`.
+    #: A transport reaches provisioning through `administer_keys`, which checks
+    #: the operator scope; the only caller that needs the raw port is
+    #: `bootstrap-admin`, which runs before any operator key exists.
+    key_admin: ApiKeyAdministration
     tokens: StreamTokenMinter
     speech: SpeechRuntime
     vision: VisionRuntime
@@ -158,11 +188,19 @@ class Container:
     read_session: ReadSession
     read_result: ReadResult
     read_capabilities: ReadCapabilities
+    administer_keys: AdministerApiKeys
 
     #: Async callables that release the infrastructure this container holds -
     #: the database connection pool, the Redis client. Empty for the memory
     #: backend, which holds nothing.
     closers: tuple[Callable[[], Awaitable[None]], ...] = field(default_factory=tuple)
+    #: `None` until the ASGI lifespan's startup warm-up decode completes, then
+    #: how long it took. Mutable and set from outside the constructor - the
+    #: container is built before the app exists to run a lifespan against, so
+    #: nothing at construction time has decoded anything yet. `/health/ready`
+    #: reads this directly rather than through a use case, because it is
+    #: process state, not evidence.
+    speech_warm_seconds: float | None = None
 
     async def aclose(self) -> None:
         """Release every held resource.
@@ -186,6 +224,14 @@ def default_configuration() -> ConfigurationSnapshot:
     threshold maps say so honestly: with no fitted curve, ``Confidence.meets``
     refuses every gate, so nothing is published as confirmed on the strength of
     a number nobody measured.
+
+    The seed says ``DETERMINISTIC_RUNTIME`` because that is checkable today:
+    both shipped runtimes replay a script, so the same session replayed twice
+    produces byte-identical evidence and there is nothing to seed. The moment
+    a runtime that makes a random choice is wired in, this line becomes false
+    and has to change with it - which is the point of stating the claim here
+    rather than leaving the field empty and letting a reader assume either
+    answer.
     """
     snapshot_id = ConfigurationSnapshotId("config-default-v1")
     return ConfigurationSnapshot(
@@ -194,6 +240,7 @@ def default_configuration() -> ConfigurationSnapshot:
         pipeline_version=PIPELINE_VERSION,
         schema_version=SCHEMA_VERSION,
         fusion_window=FusionWindow(width_ms=DEFAULT_FUSION_WINDOW_MS, configuration=snapshot_id),
+        seed=Unseeded(UnseededReason.DETERMINISTIC_RUNTIME),
         speech_thresholds={},
         visual_thresholds={},
         silence_threshold_ms=700,
@@ -210,6 +257,7 @@ def build_container(
 ) -> Container:
     """Wire everything. Raises rather than degrading when a backend is missing."""
     settings.require_infrastructure()
+    settings.reject_a_bootstrap_key_outside_local()
 
     resolved_clock: Clock = clock or SystemClock()
     telemetry = StructlogTelemetry()
@@ -228,6 +276,7 @@ def build_container(
     configuration: ConfigurationStore
     registry: ModelRegistry
     api_keys: ApiKeyDirectory
+    key_admin: ApiKeyAdministration
 
     closers: tuple[Callable[[], Awaitable[None]], ...] = ()
 
@@ -262,6 +311,9 @@ def build_container(
         api_keys = PostgresApiKeyDirectory(
             factory, settings.api_key_pepper, resolved_clock.epoch_ms
         )
+        key_admin = PostgresApiKeyAdministration(
+            factory, settings.api_key_pepper, resolved_clock.epoch_ms
+        )
     else:
         sessions = InMemorySessionRepository()
         runs = InMemoryRunRepository()
@@ -272,7 +324,13 @@ def build_container(
         quota = InMemoryQuotaGuard(resolved_clock, limits=quota_limits)
         configuration = InMemoryConfigurationStore(snapshot)
         registry = InMemoryModelRegistry()
-        api_keys = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+        directory = InMemoryApiKeyDirectory(settings.api_key_pepper, resolved_clock)
+        if settings.bootstrap_api_key:
+            _register_the_bootstrap_key(
+                directory, settings.bootstrap_api_key, settings.api_key_pepper
+            )
+        api_keys = directory
+        key_admin = InMemoryApiKeyAdministration(directory)
 
     tokens = HmacStreamTokenMinter(settings.stream_token_signing_key)
 
@@ -290,6 +348,8 @@ def build_container(
             runtime_mode=settings.runtime_mode.value,
             max_queue_depth=settings.max_queue_depth,
             stream_lease_ttl_seconds=settings.stream_lease_ttl_seconds,
+            instance_id=settings.instance_id,
+            hostname=socket.gethostname(),
         ),
         clock=resolved_clock,
         telemetry=telemetry,
@@ -303,6 +363,7 @@ def build_container(
         configuration=configuration,
         registry=registry,
         api_keys=api_keys,
+        key_admin=key_admin,
         tokens=tokens,
         speech=speech,
         vision=vision,
@@ -321,6 +382,7 @@ def build_container(
             runs=runs,
             clock=resolved_clock,
             pipeline_version=PIPELINE_VERSION,
+            contributions={**speech.contributions, **vision.contributions},
         ),
         close_run=CloseProcessingRun(runs=runs, clock=resolved_clock),
         complete_session=CompleteSession(
@@ -336,9 +398,22 @@ def build_container(
         ),
         read_session=ReadSession(sessions=sessions),
         read_result=ReadResult(sessions=sessions, evidence=evidence),
-        read_capabilities=ReadCapabilities(SCHEMA_VERSION),
+        # The runtimes are passed so `/v1/capabilities` reports what this
+        # deployment can actually emit rather than the whole taxonomy.
+        read_capabilities=ReadCapabilities(SCHEMA_VERSION, speech=speech, vision=vision),
+        administer_keys=AdministerApiKeys(directory=key_admin, audit=audit, clock=resolved_clock),
         closers=closers,
     )
+
+
+#: The two modes ADR-003 names as the destination and that nothing implements.
+_PROJECT_MODEL_MODES = frozenset(
+    {RuntimeMode.PROJECT_MODEL_LOCAL, RuntimeMode.PROJECT_MODEL_REMOTE}
+)
+
+
+class ProjectModelNotBuilt(RuntimeError):
+    """The project model was asked for and does not exist yet."""
 
 
 def _build_runtimes(
@@ -348,39 +423,119 @@ def _build_runtimes(
     visual_script: VisualScript | None,
 ) -> tuple[SpeechRuntime, VisionRuntime]:
     """Select the model runtimes and register the versions they will report."""
-    if settings.runtime_mode is RuntimeMode.MANAGED:
-        raise NotImplementedError(
-            "managed ASR and vision runtimes land in phases 3 and 5; the "
-            "deterministic runtimes are what phase 2's exit criterion is defined on"
+    speech: SpeechRuntime
+    vision: VisionRuntime
+
+    if settings.runtime_mode in _PROJECT_MODEL_MODES:
+        # Refused, not silently substituted. A deployment that asked for the
+        # project model and received the research baseline would publish
+        # figures attributed to a model that does not exist yet, and ADR-010's
+        # promotion trail would be recording a promotion that never happened.
+        raise ProjectModelNotBuilt(
+            f"runtime_mode={settings.runtime_mode.value!r} is the streaming transducer "
+            "ADR-003 targets, and it does not exist: Phase 3 trains it and Phase 1 has "
+            "not frozen the held-out set it is trained against. Use "
+            f"{RuntimeMode.BASELINE_WHISPER.value!r} for the frozen research baseline, "
+            "which is a comparator rather than the project's model, or "
+            f"{RuntimeMode.DETERMINISTIC.value!r} for scripted runtimes."
         )
+
+    if settings.runtime_mode is RuntimeMode.BASELINE_WHISPER:
+        # Speech only. The baseline *vision* runtime is Phase 5 and does not
+        # exist, so this mode pairs a real recogniser with the deterministic
+        # vision runtime rather than refusing outright - which is the shape
+        # QA-02 already requires of the engine anyway: losing one modality must
+        # not stop the other.
+        speech = WhisperSpeechRuntime.load(
+            WhisperSettings(
+                device=settings.whisper_device,
+                dtype=settings.whisper_dtype,
+                cache_dir=settings.whisper_cache_dir or None,
+            )
+        )
+        vision = DeterministicVisionRuntime(visual_script or VisualScript())
+        _register_versions(registry, speech.contributions, vision.contributions)
+        return speech, vision
 
     speech = DeterministicSpeechRuntime(speech_script or SpeechScript())
     vision = DeterministicVisionRuntime(visual_script or VisualScript())
 
-    # Registered so that NFR-014's provenance resolves even in this mode. A
-    # deterministic runtime is still a version that produced evidence, and a
-    # result that could not name it would be untraceable in exactly the runs
-    # that are supposed to be the most reproducible.
+    _register_versions(registry, speech.contributions, vision.contributions)
+    return speech, vision
+
+
+#: Who the bootstrap key belongs to. Fixed rather than configurable so that a
+#: request made with it is identifiable as one in the audit log: `local` is not
+#: a tenant anybody provisioned, and evidence attributed to it should never be
+#: mistaken for evidence from a real study participant.
+BOOTSTRAP_TENANT = "local"
+BOOTSTRAP_APPLICATION = "local-development"
+
+
+def _register_the_bootstrap_key(
+    directory: InMemoryApiKeyDirectory, secret: str, pepper: str
+) -> None:
+    """Make one preset key authenticate, so a local instance can be called.
+
+    The scopes are every published scope. That is right here and wrong almost
+    everywhere else: this key exists to exercise the documented surface from
+    the docs page, and a key that could not reach half the endpoints would send
+    a reader hunting for a permissions bug that was a configuration choice.
+
+    Registered rather than issued, because the secret is already chosen - the
+    operator has it in their shell and needs the server to accept that exact
+    value. Only the peppered hash is stored, as with any other key (FR-002),
+    and the plaintext never reaches a log.
+    """
+    directory.register(
+        ApiKeyRecord(
+            id=ApiKeyId.generate(),
+            application=ApplicationId(BOOTSTRAP_APPLICATION),
+            tenant=TenantId(BOOTSTRAP_TENANT),
+            hashed_secret=hash_secret(secret, pepper),
+            prefix=secret[:10],
+            scopes=frozenset(Scope),
+        )
+    )
+
+
+def _register_versions(
+    registry: ModelRegistry, *contributions: Mapping[ModelRole, ModelVersionId]
+) -> None:
+    """Make the versions resolvable so NFR-014's provenance is not a dangling id.
+
+    A runtime that produced evidence is a version, whether it replayed a script
+    or ran a checkpoint, and a result that could not name the version that made
+    it would be untraceable in exactly the runs meant to be most reproducible.
+
+    Registered **by role**. Each runtime declares what it contributes - a
+    recogniser, a detector, a prosody estimator, a visual estimator - and each
+    becomes its own active entry, so the registry can promote or roll back one
+    component while the others stay fixed. Keyed by modality, as this was, one
+    audio entry stood for every audio component.
+    """
     if not isinstance(registry, InMemoryModelRegistry):
         # The persistent registry is seeded by a migration or an administrative
         # call, not by process startup. Registering on boot would let a replica
         # silently reintroduce a version an administrator had just disabled.
-        return speech, vision
+        return
 
-    for modality, model_id in (
-        (Modality.AUDIO, ModelVersionId("deterministic-speech-v1")),
-        (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
-    ):
-        registry.register(
-            ModelVersion(
-                id=model_id,
-                modality=modality,
-                artifact_digest=f"sha256:deterministic-{modality.value}",
-                dataset_version="none",
-                approval=ApprovalState.EVALUATED,
-                metrics={},
-            ),
-            make_active=True,
-        )
-
-    return speech, vision
+    for contribution in contributions:
+        for role, model_id in contribution.items():
+            registry.register(
+                ModelVersion(
+                    id=model_id,
+                    role=role,
+                    # A digest the registry can hold. For the deterministic
+                    # runtimes there is no artifact; for the baseline the real
+                    # weights digest is in `BASELINE_PINS.md` and belongs there
+                    # rather than being re-derived at boot, because a mismatch
+                    # should be caught by the pin check and not by a service
+                    # that has already started.
+                    artifact_digest=f"sha256:{model_id.value}",
+                    dataset_version="none",
+                    approval=ApprovalState.EVALUATED,
+                    metrics={},
+                ),
+                make_active=True,
+            )

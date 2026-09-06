@@ -21,3 +21,4 @@ often left out and the one that matters most later.
 | [008](ADR-008-ephemeral-media.md)             | Ephemeral raw-media retention by default                                     | Accepted                           |
 | [009](ADR-009-client-side-visual-features.md) | Client-side visual feature extraction as a first-class path                  | Accepted                           |
 | [010](ADR-010-model-promotion.md)             | Model promotion, rollback and reproducibility policy                         | Accepted                           |
+| [011](ADR-011-embeddable-sdk-surface.md)      | Embeddable SDK surface, with the hosted service as an extra                  | Accepted                           |

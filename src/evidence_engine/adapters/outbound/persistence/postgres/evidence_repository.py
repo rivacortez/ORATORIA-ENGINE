@@ -38,7 +38,10 @@ from evidence_engine.domain.evidence.cooccurrence import (
     FusionWindow,
     MultimodalCooccurrence,
 )
-from evidence_engine.domain.evidence.document import EvidenceDocument
+from evidence_engine.domain.evidence.document import (
+    EvidenceDocument,
+    assert_carries_no_ranking,
+)
 from evidence_engine.domain.quality.assessment import (
     ModalityAvailability,
     QualityAssessment,
@@ -58,7 +61,7 @@ from evidence_engine.domain.shared.measurement import (
     UnavailabilityReason,
     Unavailable,
 )
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import Modality, ModelRole
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.transcript import transcript as transcript_module
 
@@ -91,6 +94,16 @@ class PostgresEvidenceRepository:
 
     async def store_document(self, document: EvidenceDocument, tenant: TenantId) -> None:
         payload = self._render(document)
+
+        # FR-029, on the only object in the system that is the published
+        # payload rather than a description of it. The application layer cannot
+        # do this - contract C6 forbids it importing the serializer - and the
+        # contract test that walks this same dict guarantees today's serializer,
+        # not this row. The row outlives the check: it is what a research
+        # export reads, what a future migration reads, and what a reader will
+        # quote in a results table long after the code that wrote it changed.
+        assert_carries_no_ranking(payload)
+
         async with unit_of_work(self._factory) as db:
             await db.merge(
                 models.EvidenceDocumentRow(
@@ -198,14 +211,6 @@ class PostgresEvidenceRepository:
         speech_events = tuple(row_to_speech_event(row) for row in speech_rows)
         visual_events = tuple(row_to_visual_event(row) for row in visual_rows)
 
-        # Prosody rows carry no provenance columns of their own - they inherit
-        # the run's audio provenance, which every speech event on the same run
-        # already records. Duplicating five columns per reading would multiply
-        # the largest table in the schema to say something already known.
-        audio_provenance = (
-            speech_events[0].provenance if speech_events else _synthetic_audio_provenance(run)
-        )
-
         return EvidenceBundle(
             run_id=RunId(run.id),
             session_id=SessionId(run.session_id),
@@ -217,7 +222,7 @@ class PostgresEvidenceRepository:
             ),
             speech_events=speech_events,
             visual_events=visual_events,
-            prosody=tuple(row_to_prosody(row, audio_provenance) for row in prosody_rows),
+            prosody=tuple(row_to_prosody(row) for row in prosody_rows),
             cooccurrences=tuple(_row_to_cooccurrence(row) for row in pair_rows),
         )
 
@@ -225,7 +230,9 @@ class PostgresEvidenceRepository:
         return list(
             (
                 await db.scalars(
-                    select(table).where(table.run_id == run_id, table.tenant_id == tenant.value)
+                    select(table)
+                    .where(table.run_id == run_id, table.tenant_id == tenant.value)
+                    .order_by(*_read_order(table))
                 )
             ).all()
         )
@@ -234,6 +241,31 @@ class PostgresEvidenceRepository:
 # ---------------------------------------------------------------------------
 # Row helpers
 # ---------------------------------------------------------------------------
+
+
+def _read_order(table: Any) -> list[Any]:
+    """The ORDER BY that reproduces the order the document was published in.
+
+    A ``SELECT`` without ``ORDER BY`` returns rows in whatever order the
+    executor finds convenient, and Postgres is entitled to change that between
+    two runs of the same query - after an autovacuum, or once the table is
+    large enough for a parallel sequential scan. ``GET /result`` rebuilds the
+    document from these rows and renders it straight to the wire, so without
+    this the published order of a consumer's evidence is the planner's whim.
+
+    That is an FR-029 problem, not only an NFR-015 one. A consumer reads the
+    first element of a list as the first thing that happened; a list ordered by
+    nothing at all still reads as ordered by something, and the reader supplies
+    the something.
+
+    ``(start_ms, end_ms, id)`` is the key ``transcript.build`` and
+    ``EvidenceDocument`` already use, so the rehydrated document satisfies the
+    constructor's ordering invariant by construction rather than by luck. The
+    cooccurrence table has no interval of its own - a pair carries two event
+    ids and a distance - so it falls back to its insertion key, which is the
+    order ``correlate`` emitted.
+    """
+    return [getattr(table, name) for name in ("start_ms", "end_ms", "id") if hasattr(table, name)]
 
 
 def _assessment_to_row(
@@ -338,8 +370,8 @@ def _document_from(row: models.EvidenceDocumentRow, bundle: EvidenceBundle) -> E
             taxonomy_version=SemanticVersion.parse(manifest_json["taxonomy_version"]),
             configuration=ConfigurationSnapshotId(manifest_json["configuration_id"]),
             models={
-                Modality(modality): ModelVersionId(model)
-                for modality, model in manifest_json["models"].items()
+                ModelRole(role): ModelVersionId(model)
+                for role, model in manifest_json["models"].items()
             },
         ),
         transcript=bundle.transcript,
@@ -348,26 +380,4 @@ def _document_from(row: models.EvidenceDocumentRow, bundle: EvidenceBundle) -> E
         visual_events=bundle.visual_events,
         prosody=bundle.prosody,
         cooccurrences=bundle.cooccurrences,
-    )
-
-
-def _synthetic_audio_provenance(run: models.ProcessingRunRow) -> Any:
-    """Provenance for a run that stored prosody but no speech events.
-
-    Rare and real: a session where the recognizer produced measurements but no
-    disfluency crossed a threshold. The run and configuration are known; the
-    model version is not recoverable from the prosody rows alone, so it is
-    named as unknown rather than guessed. NFR-014 is better served by an
-    honest gap than by a plausible-looking wrong value.
-    """
-    from evidence_engine.domain.shared.identifiers import EvidenceRef, ModelVersionId
-    from evidence_engine.domain.shared.provenance import Provenance
-    from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
-
-    return Provenance(
-        modality=Modality.AUDIO,
-        model_version=ModelVersionId("unknown"),
-        taxonomy_version=TAXONOMY_VERSION,
-        configuration=ConfigurationSnapshotId("unknown"),
-        evidence_ref=EvidenceRef(f"audio:{run.id}"),
     )

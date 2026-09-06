@@ -19,6 +19,7 @@ it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 
 from evidence_engine.application.errors import NotAuthorized, SessionNotFound
@@ -30,8 +31,15 @@ from evidence_engine.application.ports.repositories import (
     RunState,
     SessionRepository,
 )
-from evidence_engine.domain.shared.identifiers import RunId, SessionId
-from evidence_engine.domain.shared.provenance import SemanticVersion
+from evidence_engine.domain.shared.identifiers import (
+    ModelVersionId,
+    RunId,
+    SessionId,
+)
+from evidence_engine.domain.shared.provenance import (
+    ModelRole,
+    SemanticVersion,
+)
 
 
 class OpenProcessingRun:
@@ -43,11 +51,18 @@ class OpenProcessingRun:
         runs: RunRepository,
         clock: Clock,
         pipeline_version: SemanticVersion,
+        contributions: Mapping[ModelRole, ModelVersionId] | None = None,
     ) -> None:
         self._sessions = sessions
         self._runs = runs
         self._clock = clock
         self._pipeline_version = pipeline_version
+        #: What is wired, by role, recorded on every run at open. The
+        #: document's manifest says what *contributed*; this says what was
+        #: *running*, so a run that fails on its first window still names
+        #: the model it attempted (NFR-019 cannot resume a run it cannot
+        #: describe).
+        self._contributions: dict[ModelRole, ModelVersionId] = dict(contributions or {})
 
     async def execute(self, caller: AuthenticatedCaller, session_id: SessionId) -> ProcessingRun:
         if not caller.allows(Scope.SESSIONS_WRITE):
@@ -65,6 +80,7 @@ class OpenProcessingRun:
             pipeline_version=self._pipeline_version,
             state=RunState.RUNNING,
             started_at_ms=self._clock.epoch_ms(),
+            models=self._contributions,
         )
         await self._runs.add(run)
         return run

@@ -41,6 +41,11 @@ class ClientMessageType(StrEnum):
     CAPTURE_PAUSE = "capture.pause"
     CAPTURE_RESUME = "capture.resume"
     SESSION_COMPLETE = "session.complete"
+    #: Ends the run as unsuccessful rather than reconciling it. Distinct from
+    #: dropping the connection: a dropped socket already survives as a partial
+    #: failure (§6.3), but says nothing about whether the client meant to stop
+    #: - this says so explicitly, and gets an explicit reply.
+    SESSION_ABORT = "session.abort"
     CLIENT_HEARTBEAT = "client.heartbeat"
 
 

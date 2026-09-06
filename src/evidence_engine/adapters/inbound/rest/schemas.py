@@ -13,9 +13,14 @@ version it was written against.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
+from evidence_engine.application.commands.administer_keys import ISSUABLE_SCOPES
+from evidence_engine.application.ports.platform import Scope
 from evidence_engine.domain.evidence.document import EvidenceDocument
+from evidence_engine.domain.sessions.capabilities import SUPPORTED_LOCALES, AudioCodec
 
 
 class WireModel(BaseModel):
@@ -38,11 +43,47 @@ class WireModel(BaseModel):
 class CapabilityRequestBody(WireModel):
     """What the client says it can send (FR-006)."""
 
-    audio_codec: str
-    sample_rate_hz: int = Field(gt=0)
-    locale: str
-    video_format: str | None = None
-    frame_rate_fps: int | None = Field(default=None, gt=0)
+    audio_codec: str = Field(
+        description=(
+            "One of "
+            + ", ".join(f"`{codec.value}`" for codec in AudioCodec)
+            + ". `pcm16` is the only lossless option; the others are accepted "
+            "because browsers produce them, and a session using one carries a "
+            "standing quality warning - lossy compression discards the "
+            "high-frequency detail some disfluency classes are decided from."
+        ),
+    )
+    sample_rate_hz: int = Field(
+        gt=0,
+        description=(
+            "16 kHz is the working rate; higher rates are resampled down. Below "
+            "16 kHz is refused rather than upsampled, because upsampling cannot "
+            "restore detail that was never captured."
+        ),
+    )
+    locale: str = Field(
+        description=(
+            "Only " + ", ".join(f"`{tag}`" for tag in sorted(SUPPORTED_LOCALES)) + ". "
+            "Other locales are refused rather than served by a model whose error "
+            "rates on them have not been measured (§11.1)."
+        ),
+    )
+    video_format: str | None = Field(
+        default=None,
+        description=(
+            "Omit for audio only. `landmarks` sends geometry the client extracted "
+            "locally, so no image ever reaches the service - the privacy-preserving "
+            "option of ADR-009, and a first-class format rather than a fallback."
+        ),
+    )
+    frame_rate_fps: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Required when a video format is set. Below 5 fps the periodicity of "
+            "repetitive movement cannot be estimated, so it is refused."
+        ),
+    )
 
 
 class RetentionBody(WireModel):
@@ -53,13 +94,136 @@ class RetentionBody(WireModel):
     retain_derived_aggregates: bool = True
 
 
+#: What the docs page pre-fills when a reader presses "Try it out".
+#:
+#: Derived from the domain enums rather than typed out. A hand-written example
+#: is a second place the accepted values are declared, and it is the one that
+#: goes stale - while being the first thing anybody actually sends. Without it
+#: Swagger offers `"audio_codec": "string"`, the call comes back 400
+#: `unsupported_capability`, and a reader's first impression of the API is that
+#: it rejects its own documentation.
+#:
+#: `pcm16` and 16 kHz rather than a browser-friendly pair: it is the only
+#: lossless codec and the rate the ASR front end works at, so the example is
+#: also the configuration that carries no standing quality warning.
+CREATE_SESSION_EXAMPLE: dict[str, Any] = {
+    "mode": "realtime",
+    "capabilities": {
+        "audio_codec": AudioCodec.PCM16.value,
+        "sample_rate_hz": 16_000,
+        "locale": sorted(SUPPORTED_LOCALES)[0],
+    },
+    "consent_policy_version": "1.0.0",
+}
+
+
 class CreateSessionBody(WireModel):
     """``POST /v1/sessions``."""
 
-    mode: str = Field(pattern="^(realtime|batch)$")
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"examples": [CREATE_SESSION_EXAMPLE]},
+    )
+
+    mode: str = Field(
+        pattern="^(realtime|batch)$",
+        description=(
+            "`realtime` streams over the WebSocket while the presentation happens; "
+            "`batch` processes an upload after it. The evidence is the same shape; "
+            "only when it arrives differs."
+        ),
+    )
     capabilities: CapabilityRequestBody
-    consent_policy_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    consent_policy_version: str = Field(
+        pattern=r"^\d+\.\d+\.\d+$",
+        description=(
+            "The consent policy version the speaker agreed to. Recorded on the "
+            "session so a later export can prove which terms the recording was "
+            "made under (§14.4); it is not validated against a policy registry."
+        ),
+    )
     retention: RetentionBody = RetentionBody()
+
+
+# ---------------------------------------------------------------------------
+# Administration requests (/v1/admin)
+# ---------------------------------------------------------------------------
+
+
+class CreateApplicationBody(WireModel):
+    """``POST /v1/admin/applications``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [{"tenant": "acme-university", "name": "Practice app (production)"}]
+        },
+    )
+
+    tenant: str = Field(
+        min_length=1,
+        max_length=64,
+        description=(
+            "The tenant this application belongs to. Evidence is isolated by "
+            "tenant (NFR-013), so this is the boundary between two customers. "
+            "There is no tenant registry: naming a new one creates it."
+        ),
+    )
+    name: str = Field(
+        min_length=1,
+        max_length=255,
+        description=(
+            "A human label. It is what an operator identifies the application "
+            "by when revoking, so 'production' beats 'app2'."
+        ),
+    )
+
+
+#: The scopes a portal actually wants for a capture credential, and a worked
+#: example of the one it must not ask for. Derived from `ISSUABLE_SCOPES` so a
+#: scope added to the enum appears here without anybody remembering to add it.
+_ISSUE_KEY_EXAMPLE: dict[str, Any] = {
+    "scopes": sorted(
+        scope.value
+        for scope in ISSUABLE_SCOPES
+        if scope not in {Scope.EVIDENCE_DELETE, Scope.JOBS_WRITE}
+    ),
+    "expires_at_ms": None,
+}
+
+
+class IssueKeyBody(WireModel):
+    """``POST /v1/admin/applications/{id}/keys``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"examples": [_ISSUE_KEY_EXAMPLE]},
+    )
+
+    scopes: list[str] = Field(
+        min_length=1,
+        description=(
+            "What the key may do. Issuable: "
+            + ", ".join(f"`{scope.value}`" for scope in sorted(ISSUABLE_SCOPES))
+            + ". `admin` is refused: it is a platform-operator credential, and "
+            "an API that could mint one would let a leaked operator key create "
+            "its own successor.\n\n"
+            "Grant the least that works. `evidence:delete` is separate from the "
+            "write scopes precisely so a capture credential that leaks into a "
+            "client bundle cannot also erase a study's data."
+        ),
+    )
+    expires_at_ms: int | None = Field(
+        default=None,
+        description=(
+            "Epoch milliseconds, or null for a key that does not expire. Must "
+            "be in the future and within a year: an expiry further out is "
+            "unbounded while looking bounded."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +237,62 @@ class Envelope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: str
+
+
+class ApplicationBody(Envelope):
+    """One client application."""
+
+    application_id: str
+    tenant: str
+    name: str
+    status: str
+
+
+class ApplicationListBody(Envelope):
+    applications: list[ApplicationBody]
+
+
+class ApiKeyBody(Envelope):
+    """One key, as a dashboard renders it.
+
+    There is no ``secret`` field and there will not be one. The plaintext
+    exists in exactly one response - ``IssuedKeyBody`` - and only a peppered
+    hash is stored, so nothing could populate it here even if somebody added
+    it (FR-002, NFR-010).
+
+    ``prefix`` is the ``oek_`` marker plus six characters, kept in the clear so
+    a key is identifiable in a list, in a log line and in a scan of somebody's
+    repository, without being usable.
+    """
+
+    key_id: str
+    application_id: str
+    tenant: str
+    prefix: str
+    scopes: list[str]
+    expires_at_ms: int | None
+    revoked_at_ms: int | None
+
+
+class ApiKeyListBody(Envelope):
+    keys: list[ApiKeyBody]
+
+
+class IssuedKeyBody(Envelope):
+    """The one response that carries a plaintext key.
+
+    ``secret`` is not recoverable. A portal shows it once, stores
+    ``key.prefix`` and ``key.key_id``, and tells the person that closing the
+    dialog is final.
+    """
+
+    secret: str = Field(
+        description=(
+            "The API key. **Shown once.** Only a peppered hash is stored, so it "
+            "cannot be retrieved later - store it now or issue another."
+        )
+    )
+    key: ApiKeyBody
 
 
 class NegotiatedCapabilitiesBody(Envelope):
@@ -129,6 +349,58 @@ class DeletionReceiptBody(Envelope):
     already_deleted: bool
 
 
+class DeletionVerificationBody(Envelope):
+    """``GET /v1/sessions/{id}/evidence/verification``.
+
+    One field per store the deletion writes to, and ``deletion_verified`` is
+    exactly their conjunction - nothing else feeds it. A consumer can therefore
+    recompute the summary from the fields beside it, which is the property that
+    stops the summary attesting to more than was read.
+
+    Published as fields rather than as a bare boolean because the four ways
+    QA-04 fails have four different remedies, and an operator told only
+    ``false`` would go looking in the logs - the one place NFR-018 keeps this
+    content out of.
+
+    ``media_objects_remaining`` and ``evidence_document_present`` say what was
+    counted, not what was concluded. Outstanding signed URLs and evidence
+    bundles behind an unpublished run have no read-only port to ask; see
+    ``application.commands.delete_evidence`` for which of those the object
+    count covers by proxy and which it does not.
+    """
+
+    session_id: str
+    deletion_verified: bool
+    media_objects_remaining: int
+    evidence_document_present: bool
+    stream_state_present: bool
+    session_marked_deleted: bool
+    audit_record_present: bool
+
+
+class UnavailableCapabilityBody(Envelope):
+    """One taxonomy class this deployment cannot emit, and why."""
+
+    kind: str
+    name: str
+    reason: str
+    detail: str
+
+
+class InstanceBody(BaseModel):
+    """Which physical instance answered.
+
+    The pilot topology is one engine per GPU workstation, and a client
+    talking to more than one needs to attribute a result to the machine that
+    produced it - the same reason `session.accepted` carries ``instance_id``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    hostname: str
+
+
 class CapabilitiesBody(Envelope):
     """``GET /v1/capabilities``."""
 
@@ -138,11 +410,40 @@ class CapabilitiesBody(Envelope):
     video_formats: list[str]
     frame_rate_range_fps: tuple[int, int]
     locales: list[str]
+
+    #: The taxonomy catalogue: every class the published contract defines.
+    #: Read this to know what the schema can carry - not what will arrive.
     speech_event_types: list[str]
     visual_event_types: list[str]
+
+    #: **What the wired runtimes can actually produce.** Build against these.
+    #: The catalogue above used to stand in for them, so a deployment running a
+    #: recogniser and no detector advertised nine disfluency classes it could
+    #: not detect, and a consumer would have built a view for findings that
+    #: were never coming.
+    emitted_speech_event_types: list[str] = []
+    emitted_visual_event_types: list[str] = []
+    emitted_prosodic_indicators: list[str] = []
+
+    #: What the contract defines and this deployment cannot produce, each with
+    #: a reason. An empty `emitted` list plus this is the difference between
+    #: "no findings" and "no detector".
+    unavailable_capabilities: list[UnavailableCapabilityBody] = []
+
     #: §17's contract invariant, published. A consumer reading `"none"` knows
     #: no ranking will ever appear here and builds its own.
     ranking_authority: str = EvidenceDocument.ranking_authority
+
+    #: Every role this deployment has wired, by the version answering for it
+    #: right now - the union of `engine.speech.contributions` and
+    #: `engine.vision.contributions`. Distinct from `emitted_speech_event_types`
+    #: and friends: those say which *taxonomy classes* a role can produce,
+    #: this says *which version* of the role is running, which is what a
+    #: caller needs to tell two deployments of the same engine apart.
+    models: dict[str, str]
+    #: Which physical instance answered. The pilot topology can run more than
+    #: one GPU workstation behind the same consuming application.
+    instance: InstanceBody
 
 
 class ErrorBody(Envelope):

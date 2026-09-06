@@ -30,6 +30,7 @@ from evidence_engine.application.errors import BackpressureRequired
 from evidence_engine.application.ports.platform import ConfigurationSnapshot, Telemetry
 from evidence_engine.application.ports.runtimes import (
     AudioWindow,
+    MisdeclaredAudioWindow,
     SpeechRuntime,
     VisionRuntime,
     VisualFrame,
@@ -45,11 +46,14 @@ from evidence_engine.application.services.visual_assembly import VisualAssembler
 from evidence_engine.domain.evidence.ledger import EvidenceLedger
 from evidence_engine.domain.quality.assessment import ModalityAvailability, QualityReport
 from evidence_engine.domain.sessions.sequencing import ChunkLedger, ChunkVerdict
+from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.identifiers import RunId, SessionId
+from evidence_engine.domain.shared.measurement import Unavailable
 from evidence_engine.domain.shared.provenance import Modality, Provenance
 from evidence_engine.domain.shared.timeline import MonotonicTime
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
+from evidence_engine.domain.transcript.tokens import Placement, Timed, TokenSequence
 from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
@@ -80,6 +84,14 @@ class StreamingState:
     prosody: list[ProsodyReading] = field(default_factory=list)
     quality: QualityReport = field(default_factory=QualityReport)
     in_flight: int = 0
+    #: The end of the most recently *accepted* audio window - position plus
+    #: duration, in session-clock milliseconds; 0 before the first one. Set
+    #: once a window clears backpressure and is not a duplicate, regardless of
+    #: whether the runtime that decoded it succeeds: `session.completed` states
+    #: this so a caller can tell how far the run *ingested*, which is a
+    #: different question from how far the transcript has *finalized* - a
+    #: session whose speech modality degraded still captured audio.
+    captured_audio_ms: int = 0
     #: Set once a modality has failed, so the degradation notice is published
     #: on the first failure rather than on every subsequent window.
     degraded_modalities: set[Modality] = field(default_factory=set)
@@ -114,6 +126,10 @@ class StreamingCoordinator:
         self._speech_assembler = speech_assembler
         self._visual_assembler = visual_assembler
         self._max_queue_depth = max_queue_depth
+        #: Where each ingested audio window ends, by its start. The sequence
+        #: frontier is stated from these: a token is settled when the window
+        #: it came from is, placed or not.
+        self._window_ends: dict[int, int] = {}
 
     @property
     def state(self) -> StreamingState:
@@ -130,6 +146,7 @@ class StreamingCoordinator:
 
     async def ingest_audio(self, sequence: int, window: AudioWindow) -> ChunkVerdict:
         """Process one audio window, or say why it was not processed."""
+        await self._admit(sequence)
         verdict = self._state.audio_chunks.offer(sequence)
         if verdict is ChunkVerdict.DUPLICATE:
             # §7.4: redelivery is idempotent. Counting it would double every
@@ -137,7 +154,9 @@ class StreamingCoordinator:
             self._telemetry.counter("chunks.duplicate", modality="audio")
             return verdict
 
-        await self._admit()
+        self._state.captured_audio_ms = max(
+            self._state.captured_audio_ms, window.session_position_ms + window.duration_ms
+        )
         self._state.in_flight += 1
         try:
             result = await self._speech.transcribe(window)
@@ -151,6 +170,21 @@ class StreamingCoordinator:
         finally:
             self._state.in_flight -= 1
 
+        if result.window_position_ms != window.session_position_ms:
+            # Every token's sequence is keyed by the position the *result*
+            # reports, and the committed-window rule by the position the
+            # window was handed at. A runtime that reports a different one
+            # would file its words under a window that was never ingested,
+            # and the unplaced ones among them would never settle. Refused
+            # here, loudly, rather than left to surface as a missing word.
+            raise MisdeclaredAudioWindow(
+                f"the speech runtime reported window position {result.window_position_ms} ms "
+                f"for the window handed to it at {window.session_position_ms} ms; a result "
+                "must be filed under the window it was decoded from"
+            )
+        self._window_ends[window.session_position_ms] = (
+            window.session_position_ms + window.duration_ms
+        )
         assembled = self._speech_assembler.assemble(result)
 
         self._state.transcript = self._state.transcript.with_provisional(assembled.tokens)
@@ -163,12 +197,59 @@ class StreamingCoordinator:
         return verdict
 
     async def _finalize_through(self, stable_through_ms: int) -> None:
-        """Freeze everything the runtime considers settled (§6.1 step 9)."""
-        if stable_through_ms <= self._state.transcript.finalized_frontier.ms:
+        """Freeze everything the runtime considers settled (§6.1 step 9).
+
+        Two frontiers move, because the transcript has two orders. The time
+        frontier freezes placed tokens whose interval has closed. The sequence
+        frontier freezes everything the committed audio produced - including
+        words the aligner could not place, which have no interval to compare
+        and would otherwise stay provisional for the whole session.
+
+        The sequence boundary is stated from the audio the coordinator has
+        committed, never inferred from a neighbour: every token produced by a
+        window that ends at or before ``stable_through_ms`` is settled, placed
+        or not, because the runtime declared that whole stretch decoded and
+        final. An unplaced word is finalized because the coordinator committed
+        the audio it came from, never because the word next to it happens to
+        be stable. That distinction is the difference between a decision and a
+        guess.
+
+        The first version took the boundary from the *placed* tokens the time
+        frontier had just settled. An unplaced word at the end of a window then
+        stayed provisional - nothing placed came after it - and the next
+        window's hypothesis replaced the provisional tail wholesale, so the
+        word was deleted. With a runtime that declares each window stable
+        through its end, which is what whisper does, that was every trailing
+        word the aligner failed on. The settled placed tokens still count, as
+        a lower bound, for a runtime whose stable stretch ends mid-window.
+        """
+        if stable_through_ms <= self._state.transcript.finalized_time_frontier.ms:
             return
 
         boundary = MonotonicTime(stable_through_ms)
-        self._state.transcript = self._state.transcript.finalize_through(boundary)
+        transcript = self._state.transcript.finalize_through_time(boundary)
+        # The sequence frontier is the last token before the first one that
+        # is not settled, walking lexical order. A placed word is settled when
+        # the time rule settled it; an unplaced word when its window is
+        # committed. Walking and stopping - rather than taking a maximum -
+        # is what keeps a placed word whose interval reaches past the stable
+        # point out of the frontier: a maximum over committed windows swept it
+        # in, the time frontier then reported audio as frozen that the runtime
+        # had not certified, and the next window's first word was refused as
+        # rewriting it.
+        frontier: TokenSequence | None = None
+        for token in transcript.tokens:
+            settled = (
+                token.is_final
+                if token.is_timed
+                else self._window_committed(token.sequence.window_position_ms, stable_through_ms)
+            )
+            if not settled:
+                break
+            frontier = token.sequence
+        if frontier is not None:
+            transcript = transcript.finalize_through_sequence(frontier)
+        self._state.transcript = transcript
 
         newly_final: list[SpeechEvent] = []
         for key, event in list(self._state.speech_events.items()):
@@ -184,16 +265,26 @@ class StreamingCoordinator:
         await self._publish_transcript(is_final=True)
         await self._publish_speech(tuple(newly_final), is_final=True)
 
+    def _window_committed(self, position_ms: int, stable_through_ms: int) -> bool:
+        """Whether the window that starts at ``position_ms`` ends at or before the stable point.
+
+        Known only for windows this coordinator ingested itself. After a
+        handler restart the map is empty, and the placed-token lower bound in
+        `_finalize_through` is what remains until the next window lands.
+        """
+        end = self._window_ends.get(position_ms)
+        return end is not None and end <= stable_through_ms
+
     # -- video ------------------------------------------------------------
 
     async def ingest_video(self, sequence: int, frames: Sequence[VisualFrame]) -> ChunkVerdict:
         """Process a batch of frames. A failure here never fails the session."""
+        await self._admit(sequence)
         verdict = self._state.video_chunks.offer(sequence)
         if verdict is ChunkVerdict.DUPLICATE:
             self._telemetry.counter("chunks.duplicate", modality="video")
             return verdict
 
-        await self._admit()
         self._state.in_flight += 1
         try:
             result = await self._vision.observe(frames)
@@ -217,11 +308,30 @@ class StreamingCoordinator:
 
     # -- shared -----------------------------------------------------------
 
-    async def _admit(self) -> None:
-        """Refuse work once the bounded queue is full (FR-010)."""
+    async def _admit(self, sequence: int) -> None:
+        """Refuse work once the bounded queue is full (FR-010), before the chunk is seen.
+
+        Checked *before* ``offer(sequence)`` runs. The original order called
+        ``offer()`` first: a refused chunk was still recorded as accepted, so a
+        caller that resent the exact same ``chunk_seq`` - the only sane thing
+        to retry - had it come back ``DUPLICATE`` and silently dropped. A
+        client watching the wire saw an explicit backpressure signal and no
+        error, and the audio was gone anyway. Checking admission first means a
+        refused sequence is never marked seen, so the ledger meets a resend of
+        it for the first time.
+
+        The cost is symmetric with a genuine duplicate: if the queue happens to
+        be full when an already-processed chunk is redelivered, this now asks
+        for it to be resent rather than reporting it a harmless duplicate
+        straight away. That costs one extra round trip and loses nothing,
+        which is the trade §7.4's idempotence rule and FR-010's no-loss rule
+        both accept.
+        """
         if self._state.in_flight < self._max_queue_depth:
             return
-        await self._channel.request_backpressure(self._state.session_id, self._state.in_flight)
+        await self._channel.request_backpressure(
+            self._state.session_id, self._state.in_flight, sequence
+        )
         self._telemetry.counter("backpressure.requested")
         raise BackpressureRequired(
             f"{self._state.in_flight} windows already in flight; slow down",
@@ -249,7 +359,7 @@ class StreamingCoordinator:
             OutboundEvent(
                 type=ServerMessageType.PROCESSING_DEGRADED,
                 session_id=self._state.session_id,
-                monotonic_time_ms=self._state.transcript.finalized_frontier.ms,
+                monotonic_time_ms=self._state.transcript.finalized_time_frontier.ms,
                 payload={
                     "modality": notice.modality.value,
                     "reason": notice.reason,
@@ -311,17 +421,23 @@ class StreamingCoordinator:
     def _speech_provenance(self, events: Sequence[SpeechEvent]) -> Provenance | None:
         """Provenance for events this layer derives rather than receives.
 
-        Borrowed from a real event of the same run so a derived pause carries
-        the same model and configuration versions as the tokens it was computed
-        from. Falling back to a synthetic provenance would make NFR-014's
-        traceability a half-truth for exactly the events nobody inspects, so
-        the honest answer when there is no real event to borrow from is
-        ``None`` - and the caller then derives nothing.
+        Taken from the **recogniser's own tokens**, which is what a silent pause
+        is derived from: the gap between two word boundaries, under the
+        versioned threshold. So the pause carries the version of the model
+        whose boundaries it was computed from, which is the only honest
+        attribution there is.
+
+        This used to be *borrowed from an event* - any event of the run - and
+        return ``None`` when there was none. With a runtime that emits no
+        events, which is what the Whisper baseline is, that was circular: no
+        events, so no provenance, so no pauses, so no events. The one taxonomy
+        class the README said "works today" was never derived on the streaming
+        path at all. Tokens now carry provenance, so there is always something
+        to read when there is anything to derive from.
         """
-        if events:
-            return events[0].provenance
-        for event in self._state.speech_events.values():
-            return event.provenance
+        del events
+        for token in self._state.transcript.tokens:
+            return token.provenance
         return None
 
     # -- publishing -------------------------------------------------------
@@ -334,6 +450,11 @@ class StreamingCoordinator:
         )
         if not tokens:
             return
+        # The event's clock reading comes from the last *placed* word. An
+        # unplaced one has no end to read, and a batch that is entirely
+        # unplaced - possible, the aligner fails per word - falls back to the
+        # frontier rather than to a number nobody measured.
+        placed = [token for token in tokens if token.is_timed]
         await self._channel.publish(
             OutboundEvent(
                 type=(
@@ -342,17 +463,23 @@ class StreamingCoordinator:
                     else ServerMessageType.TRANSCRIPT_PARTIAL
                 ),
                 session_id=self._state.session_id,
-                monotonic_time_ms=tokens[-1].interval.end.ms,
+                # The latest end among the placed words, not the lexically
+                # last one's: lexical and temporal order agree for most
+                # transcripts and not for all, and the timeline this field
+                # reports must not run backwards between two publishes.
+                monotonic_time_ms=(
+                    max(token.interval.end.ms for token in placed)
+                    if placed
+                    else self._state.transcript.finalized_time_frontier.ms
+                ),
                 payload={
                     "tokens": [
                         {
                             "id": token.id.value,
                             "raw_text": token.raw_text,
-                            "start_ms": token.interval.start.ms,
-                            "end_ms": token.interval.end.ms,
-                            "tolerance_ms": token.interval.tolerance_ms,
-                            "confidence": token.confidence.value,
-                            "calibration": token.confidence.state.value,
+                            "model_version": token.provenance.model_version.value,
+                            **_token_placement(token.placement),
+                            **_token_confidence(token.confidence),
                         }
                         for token in tokens
                     ]
@@ -390,7 +517,7 @@ class StreamingCoordinator:
             OutboundEvent(
                 type=ServerMessageType.QUALITY_WARNING,
                 session_id=self._state.session_id,
-                monotonic_time_ms=self._state.transcript.finalized_frontier.ms,
+                monotonic_time_ms=self._state.transcript.finalized_time_frontier.ms,
                 payload={
                     "windows": [
                         {
@@ -431,4 +558,50 @@ def _speech_payload(event: SpeechEvent) -> dict[str, object]:
         "model_version": event.provenance.model_version.value,
         "taxonomy_version": str(event.provenance.taxonomy_version),
         "evidence_ref": event.provenance.evidence_ref.value,
+    }
+
+
+def _token_placement(placement: Placement) -> dict[str, object]:
+    """Where the word sat, or the reason that is unknown - the live-wire twin
+    of the REST serializer's `_render_placement`.
+
+    Reading `token.interval` here unconditionally was the streaming copy of
+    §4.14: the domain admits a word with no placement, and the first live
+    session to produce one raised `FabricatedValue` out of the publisher and
+    ended the session. Disjoint key sets, as on REST: an unplaced word has no
+    `start_ms` at all rather than `"start_ms": null`, because a null in a
+    numeric field is what a consumer coerces to zero.
+    """
+    if isinstance(placement, Timed):
+        return {
+            "placed": True,
+            "start_ms": placement.interval.start.ms,
+            "end_ms": placement.interval.end.ms,
+            "tolerance_ms": placement.interval.tolerance_ms,
+        }
+    return {
+        "placed": False,
+        "placement_unavailable_reason": placement.reason.value,
+        "placement_unavailable_detail": placement.detail,
+    }
+
+
+def _token_confidence(confidence: Confidence | Unavailable) -> dict[str, object]:
+    """The live-wire twin of the REST serializer's rule.
+
+    §7.4 requires the streaming and REST shapes to agree, and both must keep
+    the unavailable case out of a numeric field: `"confidence": null` is what a
+    chart turns into zero, and the recogniser never claimed the word scored
+    zero.
+    """
+    if isinstance(confidence, Unavailable):
+        return {
+            "confidence_available": False,
+            "confidence_unavailable_reason": confidence.reason.value,
+            "confidence_unavailable_detail": confidence.detail,
+        }
+    return {
+        "confidence_available": True,
+        "confidence": confidence.value,
+        "calibration": confidence.state.value,
     }

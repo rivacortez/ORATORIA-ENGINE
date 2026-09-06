@@ -16,23 +16,69 @@ from __future__ import annotations
 import pytest
 
 from evidence_engine.domain.shared.confidence import Confidence
-from evidence_engine.domain.shared.identifiers import EventId, TokenId
-from evidence_engine.domain.shared.provenance import Provenance
-from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventType
+from evidence_engine.domain.shared.identifiers import (
+    ConfigurationSnapshotId,
+    EventId,
+    EvidenceRef,
+    ModelVersionId,
+    TokenId,
+)
+from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.provenance import Modality, ModelRole, Provenance
+from evidence_engine.domain.shared.taxonomy import (
+    TAXONOMY_VERSION,
+    ContextualRole,
+    SpeechEventType,
+)
 from evidence_engine.domain.shared.timeline import Interval, MonotonicTime
 from evidence_engine.domain.speech_events.events import SpeechEvent, SpeechEventViolation
 from evidence_engine.domain.transcript import transcript as transcript_module
-from evidence_engine.domain.transcript.tokens import TokenStatus, TranscriptViolation, WordToken
+from evidence_engine.domain.transcript.tokens import (
+    AlignmentUnavailable,
+    Timed,
+    TokenSequence,
+    TokenStatus,
+    TranscriptViolation,
+    WordToken,
+)
 
 pytestmark = pytest.mark.invariant
 
 
+#: The recogniser's provenance, shared by every token these tests build. A
+#: token carries one now - it was the only evidence that did not - and the
+#: domain refuses any role but the recogniser's on a word.
+RECOGNISER = Provenance(
+    modality=Modality.AUDIO,
+    role=ModelRole.RECOGNISER,
+    model_version=ModelVersionId("test-recogniser-v1"),
+    taxonomy_version=TAXONOMY_VERSION,
+    configuration=ConfigurationSnapshotId("config-test"),
+    evidence_ref=EvidenceRef("audio:test"),
+)
+
+
 def _token(text: str, start: int, end: int, index: int = 0) -> WordToken:
+    """A placed token. `_unplaced` below builds the other kind."""
     return WordToken(
         id=TokenId(f"tok-{index}"),
+        sequence=TokenSequence(window_position_ms=0, index=index),
         raw_text=text,
-        interval=Interval.of(start, end),
+        placement=Timed(Interval.of(start, end)),
         confidence=Confidence.calibrated(0.9),
+        provenance=RECOGNISER,
+    )
+
+
+def _unplaced(text: str, index: int) -> WordToken:
+    """A word the aligner could not place, which is still a word."""
+    return WordToken(
+        id=TokenId(f"tok-{index}"),
+        sequence=TokenSequence(window_position_ms=0, index=index),
+        raw_text=text,
+        placement=AlignmentUnavailable(detail="alignment heads returned no interval"),
+        confidence=Unavailable(reason=UnavailabilityReason.POSTERIOR_NOT_REPORTED),
+        provenance=RECOGNISER,
     )
 
 
@@ -60,9 +106,11 @@ def test_an_empty_token_is_refused() -> None:
     with pytest.raises(TranscriptViolation, match="UNINTELLIGIBLE"):
         WordToken(
             id=TokenId("tok-0"),
+            sequence=TokenSequence(window_position_ms=0, index=0),
             raw_text="",
-            interval=Interval.of(0, 100),
+            placement=Timed(Interval.of(0, 100)),
             confidence=Confidence.calibrated(0.5),
+            provenance=RECOGNISER,
         )
 
 
@@ -73,7 +121,7 @@ def test_an_empty_token_is_refused() -> None:
 
 def test_finalized_tokens_survive_a_new_provisional_hypothesis() -> None:
     transcript = transcript_module.build([_token("hola", 0, 400, 0)])
-    transcript = transcript.finalize_through(MonotonicTime(400))
+    transcript = transcript.finalize_through_time(MonotonicTime(400))
 
     transcript = transcript.with_provisional([_token("mundo", 400, 900, 1)])
 
@@ -84,7 +132,7 @@ def test_finalized_tokens_survive_a_new_provisional_hypothesis() -> None:
 
 def test_a_provisional_hypothesis_behind_the_frontier_is_refused() -> None:
     transcript = transcript_module.build([_token("hola", 0, 400, 0)])
-    transcript = transcript.finalize_through(MonotonicTime(400))
+    transcript = transcript.finalize_through_time(MonotonicTime(400))
 
     with pytest.raises(TranscriptViolation, match="finalized frontier"):
         transcript.with_provisional([_token("adios", 200, 600, 9)])
@@ -92,10 +140,10 @@ def test_a_provisional_hypothesis_behind_the_frontier_is_refused() -> None:
 
 def test_the_frontier_never_moves_backwards() -> None:
     transcript = transcript_module.build([_token("hola", 0, 400, 0)])
-    transcript = transcript.finalize_through(MonotonicTime(400))
+    transcript = transcript.finalize_through_time(MonotonicTime(400))
 
     with pytest.raises(TranscriptViolation, match="backwards"):
-        transcript.finalize_through(MonotonicTime(200))
+        transcript.finalize_through_time(MonotonicTime(200))
 
 
 def test_a_finalized_token_cannot_be_revised() -> None:

@@ -84,7 +84,9 @@ def downgrade() -> None:
 
 
 def _statements() -> tuple[list[str], list[str]]:
-    dialect = postgresql.dialect()
+    # SQLAlchemy ships no annotation for the dialect constructor; mypy now
+    # covers `scripts`, and this is the one untyped call it has to look past.
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
     creates: list[str] = []
     drops: list[str] = []
 

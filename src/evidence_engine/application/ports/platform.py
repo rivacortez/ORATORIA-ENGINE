@@ -25,7 +25,12 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Seed,
+    SemanticVersion,
+)
 from evidence_engine.domain.visual_events.calibration import VisualCalibration
 
 # ---------------------------------------------------------------------------
@@ -91,6 +96,102 @@ class ApiKeyDirectory(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ClientApplicationRecord:
+    """§8 ``ClientApplication``, as an administrator sees it.
+
+    An application is what a key belongs to, and a tenant is what a session is
+    isolated by (NFR-013). Keeping them separate is what lets one customer run
+    a production and a staging integration whose keys can be revoked
+    independently while their evidence stays in one tenant.
+    """
+
+    id: ApplicationId
+    tenant: TenantId
+    name: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiKeyDescriptor:
+    """A key as an administrator sees it.
+
+    Note what is absent, and that its absence is the point: there is no field
+    for the secret, and no method anywhere returns one after issuance. A
+    dashboard listing keys renders ``prefix`` - the ``oek_`` marker plus six
+    characters kept in the clear precisely so a key is identifiable without
+    being usable.
+    """
+
+    key_id: ApiKeyId
+    application: ApplicationId
+    tenant: TenantId
+    prefix: str
+    scopes: frozenset[Scope]
+    expires_at_ms: int | None = None
+    revoked_at_ms: int | None = None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at_ms is not None
+
+
+class ApiKeyAdministration(Protocol):
+    """Provisioning: creating applications, issuing keys, revoking them.
+
+    A separate port from ``ApiKeyDirectory`` rather than more methods on it,
+    for two reasons that both matter.
+
+    *They run on different paths.* ``authenticate`` is called on every single
+    request; these are called when a person presses a button. An adapter built
+    for the hot path - a read-through cache, a replica - can implement the
+    directory honestly and has no business implementing issuance.
+
+    *They need different privileges.* A deployment can give the authenticating
+    component read-only database credentials only if issuance is somewhere
+    else. Merging the two would make that impossible to express.
+
+    Every method takes the tenant explicitly. This port is reached only by a
+    caller holding ``Scope.ADMIN``, which is a platform-operator credential
+    rather than a customer one - see ``AdministerApiKeys`` for why that
+    distinction is enforced rather than merely documented.
+    """
+
+    async def create_application(self, tenant: TenantId, name: str) -> ClientApplicationRecord: ...
+
+    async def list_applications(self, tenant: TenantId) -> tuple[ClientApplicationRecord, ...]: ...
+
+    async def get_application(
+        self, application: ApplicationId
+    ) -> ClientApplicationRecord | None: ...
+
+    async def issue(
+        self,
+        application: ApplicationId,
+        tenant: TenantId,
+        scopes: frozenset[Scope],
+        expires_at_ms: int | None = None,
+    ) -> tuple[str, ApiKeyDescriptor]:
+        """Mint a key, returning the plaintext **exactly once** (FR-002, US-006).
+
+        The first element of the tuple is the only time the secret exists
+        outside the caller's hands. Nothing stores it; only a peppered hash is
+        persisted, so a caller that loses it has to issue another.
+        """
+        ...
+
+    async def list_keys(self, application: ApplicationId) -> tuple[ApiKeyDescriptor, ...]: ...
+
+    async def revoke(self, key_id: ApiKeyId, at_ms: int) -> ApiKeyDescriptor | None:
+        """Block a key immediately. ``None`` when no such key exists.
+
+        Returns the descriptor rather than a boolean so the caller can audit
+        *which* application and tenant just lost a credential without a second
+        read that might see a different row.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
 class QuotaDecision:
     """Whether a call may proceed, and what to tell the caller if not."""
 
@@ -129,6 +230,13 @@ class ConfigurationSnapshot:
     object is captured at session creation rather than read per window - a
     threshold changed mid-session would make the first half and the second half
     of one presentation incomparable.
+
+    ``seed`` has no default, unlike every other tuning knob here. "Complete
+    snapshot" is the whole of US-008's promise, and a defaulted seed would let
+    a snapshot that never stated its seed policy be indistinguishable from one
+    that deliberately chose the same value. NFR-015 names the seed alongside
+    the input, the artifact and the configuration; the other three cannot be
+    omitted either.
     """
 
     id: ConfigurationSnapshotId
@@ -136,6 +244,12 @@ class ConfigurationSnapshot:
     pipeline_version: SemanticVersion
     schema_version: SemanticVersion
     fusion_window: FusionWindow
+    #: The seed the run is configured to use, or the reason there is none. Not
+    #: the same claim as ``Provenance.seed``, which is what a runtime actually
+    #: consumed: a deterministic runtime handed a configured seed ignores it,
+    #: and reporting the configured value as provenance would describe a
+    #: reproduction path that was never taken.
+    seed: Seed
     #: Publication threshold per speech class, keyed by the class identifier.
     speech_thresholds: Mapping[str, float] = field(default_factory=dict)
     #: Publication threshold per visual class.
@@ -184,7 +298,12 @@ class ModelVersion:
     """§8 ``ModelVersion``: an artifact and everything needed to trust it."""
 
     id: ModelVersionId
-    modality: Modality
+    #: The component this artifact fills. Registry, promotion, canary and
+    #: rollback are keyed by this. They were keyed by modality, which allowed
+    #: one active audio model - and QA-03 requires the contextual classifier
+    #: to be canaried while the recogniser stays fixed, which a
+    #: modality-keyed registry cannot even express.
+    role: ModelRole
     artifact_digest: str
     dataset_version: str
     approval: ApprovalState
@@ -195,11 +314,15 @@ class ModelVersion:
     #: minutes, which is only possible if the target was decided in advance.
     rollback_to: ModelVersionId | None = None
 
+    @property
+    def modality(self) -> Modality:
+        return self.role.modality
+
 
 class ModelRegistry(Protocol):
     """Lineage, approval and traffic routing for model artifacts."""
 
-    async def active_for(self, modality: Modality) -> ModelVersion:
+    async def active_for(self, role: ModelRole) -> ModelVersion:
         """The version that should serve the next request for this modality."""
         ...
 
@@ -214,11 +337,11 @@ class ModelRegistry(Protocol):
         """
         ...
 
-    async def rollback(self, modality: Modality) -> ModelVersion:
+    async def rollback(self, role: ModelRole) -> ModelVersion:
         """Return to the recorded fallback without changing any schema."""
         ...
 
-    async def list_versions(self, modality: Modality) -> Sequence[ModelVersion]: ...
+    async def list_versions(self, role: ModelRole) -> Sequence[ModelVersion]: ...
 
 
 # ---------------------------------------------------------------------------

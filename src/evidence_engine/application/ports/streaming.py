@@ -78,6 +78,10 @@ class ServerMessageType(StrEnum):
     BACKPRESSURE_REQUESTED = "backpressure.requested"
     PROCESSING_DEGRADED = "processing.degraded"
     SESSION_COMPLETED = "session.completed"
+    #: Reply to a client ``session.abort``: the run closed unsuccessfully and
+    #: the socket is about to close normally. Distinct from ``error``, which
+    #: §7.3 keeps non-fatal - this one always ends the session.
+    SESSION_ABORTED = "session.aborted"
     ERROR = "error"
 
 
@@ -110,12 +114,20 @@ class EventChannel(Protocol):
 
     async def publish(self, event: OutboundEvent) -> None: ...
 
-    async def request_backpressure(self, session_id: SessionId, queue_depth: int) -> None:
+    async def request_backpressure(
+        self, session_id: SessionId, queue_depth: int, chunk_seq: int
+    ) -> None:
         """FR-010: signal explicitly before memory is exhausted.
 
         Explicit rather than implicit: US-012 makes backpressure part of the
         contract, so a client that keeps sending is misbehaving rather than
         merely unlucky. Silently dropping chunks instead would show up later as
         an unexplained gap in the evidence.
+
+        ``chunk_seq`` names the refused chunk, not the next one expected. The
+        coordinator calls this *before* the chunk is recorded as seen, so the
+        caller can resend exactly this sequence number - a caller told only the
+        queue depth would have no way to know which of its unacknowledged
+        windows to retry.
         """
         ...

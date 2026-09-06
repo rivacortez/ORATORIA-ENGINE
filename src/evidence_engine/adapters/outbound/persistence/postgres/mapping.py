@@ -40,7 +40,15 @@ from evidence_engine.domain.shared.measurement import (
     UnavailabilityReason,
     Unavailable,
 )
-from evidence_engine.domain.shared.provenance import Modality, Provenance, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    ModelRole,
+    Provenance,
+    Seed,
+    Seeded,
+    SemanticVersion,
+    Unseeded,
+    UnseededReason,
+)
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
     ProsodicIndicator,
@@ -50,7 +58,14 @@ from evidence_engine.domain.shared.taxonomy import (
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
-from evidence_engine.domain.transcript.tokens import TokenStatus, WordToken
+from evidence_engine.domain.transcript.tokens import (
+    AlignmentUnavailable,
+    Placement,
+    Timed,
+    TokenSequence,
+    TokenStatus,
+    WordToken,
+)
 from evidence_engine.domain.visual_events.events import GazeDirection, VisualEvent
 
 # ---------------------------------------------------------------------------
@@ -157,27 +172,108 @@ def token_to_row(token: WordToken, run_id: str, tenant: TenantId) -> models.Word
         run_id=run_id,
         tenant_id=tenant.value,
         raw_text=token.raw_text,
-        start_ms=token.interval.start.ms,
-        end_ms=token.interval.end.ms,
-        tolerance_ms=token.interval.tolerance_ms,
-        confidence=token.confidence.value,
-        calibration=token.confidence.state.value,
+        sequence_window_ms=token.sequence.window_position_ms,
+        sequence_index=token.sequence.index,
+        **_placement_columns(token.placement),
+        **_confidence_columns(token.confidence),
+        **_provenance_columns(token.provenance),
         status=token.status.value,
     )
 
 
+def _placement_columns(placement: Placement) -> dict[str, object]:
+    """The two mutually exclusive shapes a stored placement can take."""
+    if isinstance(placement, Timed):
+        return {
+            "start_ms": placement.interval.start.ms,
+            "end_ms": placement.interval.end.ms,
+            "tolerance_ms": placement.interval.tolerance_ms,
+            "placement_unavailable_reason": None,
+            "placement_unavailable_detail": "",
+        }
+    return {
+        "start_ms": None,
+        "end_ms": None,
+        "tolerance_ms": None,
+        "placement_unavailable_reason": placement.reason.value,
+        "placement_unavailable_detail": placement.detail,
+    }
+
+
+def _placement_from(row: models.WordTokenRow) -> Placement:
+    """Read back whichever state was stored.
+
+    Branches on the reason rather than on the nullability of ``start_ms``, for
+    the same argument as ``_confidence_from``: the check constraint guarantees
+    exactly one shape, and reading the discriminator means a relaxed constraint
+    would surface as a loud assertion rather than as an interval built from
+    None.
+    """
+    if row.placement_unavailable_reason is not None:
+        return AlignmentUnavailable(
+            reason=UnavailabilityReason(row.placement_unavailable_reason),
+            detail=row.placement_unavailable_detail,
+        )
+    assert row.start_ms is not None
+    assert row.end_ms is not None
+    assert row.tolerance_ms is not None
+    return Timed(Interval.of(row.start_ms, row.end_ms, row.tolerance_ms))
+
+
+def _confidence_columns(confidence: Confidence | Unavailable) -> dict[str, object]:
+    """The two mutually exclusive shapes a stored confidence can take."""
+    if isinstance(confidence, Unavailable):
+        return {
+            "confidence": None,
+            "calibration": None,
+            "confidence_unavailable_reason": confidence.reason.value,
+            "confidence_unavailable_detail": confidence.detail,
+        }
+    return {
+        "confidence": confidence.value,
+        "calibration": confidence.state.value,
+        "confidence_unavailable_reason": None,
+        "confidence_unavailable_detail": "",
+    }
+
+
+def _confidence_from(row: models.WordTokenRow) -> Confidence | Unavailable:
+    """Read back whichever state was stored.
+
+    The reason column decides, not the nullability of the score: the check
+    constraint guarantees exactly one of the two shapes, so branching on the
+    reason cannot produce a `Confidence(None)` if a future migration relaxes
+    something.
+    """
+    if row.confidence_unavailable_reason is not None:
+        return Unavailable(
+            reason=UnavailabilityReason(row.confidence_unavailable_reason),
+            detail=row.confidence_unavailable_detail,
+        )
+    # Both are non-null here by `ck_token_confidence_exactly_one_state`. The
+    # asserts state that for the type checker and would fire loudly rather than
+    # constructing a Confidence from None if the constraint were ever dropped.
+    assert row.confidence is not None
+    assert row.calibration is not None
+    return Confidence(row.confidence, CalibrationState(row.calibration))
+
+
 def row_to_token(row: models.WordTokenRow) -> WordToken:
     return WordToken(
+        sequence=TokenSequence(window_position_ms=row.sequence_window_ms, index=row.sequence_index),
+        placement=_placement_from(row),
         id=TokenId(row.id),
         raw_text=row.raw_text,
-        interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
-        confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
+        confidence=_confidence_from(row),
+        provenance=_provenance(row, ModelRole.RECOGNISER),
         status=TokenStatus(row.status),
     )
 
 
 def speech_event_to_row(event: SpeechEvent, run_id: str, tenant: TenantId) -> models.SpeechEventRow:
+    seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.SpeechEventRow(
+        role=event.provenance.role.value,
         id=event.id.value,
         run_id=run_id,
         tenant_id=tenant.value,
@@ -194,6 +290,8 @@ def speech_event_to_row(event: SpeechEvent, run_id: str, tenant: TenantId) -> mo
         taxonomy_version=str(event.provenance.taxonomy_version),
         configuration_id=event.provenance.configuration.value,
         evidence_ref=event.provenance.evidence_ref.value,
+        seed=seed,
+        seed_reason=seed_reason,
     )
 
 
@@ -203,7 +301,7 @@ def row_to_speech_event(row: models.SpeechEventRow) -> SpeechEvent:
         type=SpeechEventType(row.type),
         interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
         confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
-        provenance=_provenance(row, Modality.AUDIO),
+        provenance=_provenance(row, ModelRole(row.role)),
         raw_text=row.raw_text,
         context_role=ContextualRole(row.context_role) if row.context_role else None,
         is_final=row.is_final,
@@ -211,7 +309,9 @@ def row_to_speech_event(row: models.SpeechEventRow) -> SpeechEvent:
 
 
 def visual_event_to_row(event: VisualEvent, run_id: str, tenant: TenantId) -> models.VisualEventRow:
+    seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.VisualEventRow(
+        role=event.provenance.role.value,
         id=event.id.value,
         run_id=run_id,
         tenant_id=tenant.value,
@@ -228,6 +328,8 @@ def visual_event_to_row(event: VisualEvent, run_id: str, tenant: TenantId) -> mo
         taxonomy_version=str(event.provenance.taxonomy_version),
         configuration_id=event.provenance.configuration.value,
         evidence_ref=event.provenance.evidence_ref.value,
+        seed=seed,
+        seed_reason=seed_reason,
     )
 
 
@@ -237,7 +339,7 @@ def row_to_visual_event(row: models.VisualEventRow) -> VisualEvent:
         type=VisualEventType(row.type),
         interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
         confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
-        provenance=_provenance(row, Modality.VIDEO),
+        provenance=_provenance(row, ModelRole(row.role)),
         direction=GazeDirection(row.direction) if row.direction else None,
         magnitude=row.magnitude,
         is_final=row.is_final,
@@ -260,6 +362,8 @@ def prosody_to_row(
         indicator=reading.indicator.value,
         start_ms=reading.window.start.ms,
         end_ms=reading.window.end.ms,
+        role=reading.provenance.role.value,
+        **_provenance_columns(reading.provenance),
     )
     if isinstance(reading.value, Measured):
         row.value = reading.value.value
@@ -273,7 +377,15 @@ def prosody_to_row(
     return row
 
 
-def row_to_prosody(row: models.ProsodyReadingRow, provenance: Provenance) -> ProsodyReading:
+def row_to_prosody(row: models.ProsodyReadingRow) -> ProsodyReading:
+    """A reading with its own provenance, read from its own row.
+
+    Readings used to take a `provenance` argument - the run's audio
+    provenance, borrowed from whichever speech event existed, or a
+    fabricated `unknown` when none did. A prosody estimator is a model of
+    its own and its version lives on its rows.
+    """
+    provenance = _provenance(row, ModelRole(row.role))
     window = Interval.of(row.start_ms, row.end_ms)
     if row.value is not None and row.unit is not None:
         return ProsodyReading(
@@ -299,13 +411,72 @@ def row_to_prosody(row: models.ProsodyReadingRow, provenance: Provenance) -> Pro
     )
 
 
+def _provenance_columns(provenance: Provenance) -> dict[str, object]:
+    """The five provenance columns every evidence row carries."""
+    seed, seed_reason = seed_to_columns(provenance.seed)
+    return {
+        "model_version": provenance.model_version.value,
+        "taxonomy_version": str(provenance.taxonomy_version),
+        "configuration_id": provenance.configuration.value,
+        "evidence_ref": provenance.evidence_ref.value,
+        "seed": seed,
+        "seed_reason": seed_reason,
+    }
+
+
 def _provenance(
-    row: models.SpeechEventRow | models.VisualEventRow, modality: Modality
+    row: (
+        models.SpeechEventRow
+        | models.VisualEventRow
+        | models.WordTokenRow
+        | models.ProsodyReadingRow
+    ),
+    role: ModelRole,
 ) -> Provenance:
     return Provenance(
-        modality=modality,
+        modality=role.modality,
+        role=role,
         model_version=ModelVersionId(row.model_version),
         taxonomy_version=SemanticVersion.parse(row.taxonomy_version),
         configuration=ConfigurationSnapshotId(row.configuration_id),
         evidence_ref=EvidenceRef(row.evidence_ref),
+        seed=seed_from_columns(row.seed, row.seed_reason),
     )
+
+
+# ---------------------------------------------------------------------------
+# Seed columns (NFR-015)
+# ---------------------------------------------------------------------------
+#
+# Shared by the event rows and the configuration snapshot row, which carry the
+# same pair of columns under the same check constraint. Two callers writing
+# the pair by hand is two chances to write the seed and leave the reason set.
+
+
+def seed_to_columns(seed: Seed) -> tuple[int | None, str | None]:
+    """Split a seed onto its ``(seed, seed_reason)`` columns.
+
+    The branch is the database-side half of NFR-015, exactly as
+    ``prosody_to_row`` is FR-025's: one column or the other is written, never
+    both and never neither, and the check constraint refuses anything else.
+    """
+    if isinstance(seed, Seeded):
+        return seed.value, None
+    return None, seed.reason.value
+
+
+def seed_from_columns(seed: int | None, reason: str | None) -> Seed:
+    """Rebuild a seed from its columns.
+
+    Both null means the row predates the columns, and ``NOT_RECORDED`` is the
+    literal truth about it. An unrecognised reason string is *not* folded into
+    ``NOT_RECORDED``: that would report "no seed was recorded" about a row that
+    plainly recorded one, and the mapping seam is where a lie like that becomes
+    permanent. It raises, which is what a database written by a newer schema
+    than the running code should do.
+    """
+    if seed is not None:
+        return Seeded(seed)
+    if reason is None:
+        return Unseeded(UnseededReason.NOT_RECORDED)
+    return Unseeded(UnseededReason(reason))

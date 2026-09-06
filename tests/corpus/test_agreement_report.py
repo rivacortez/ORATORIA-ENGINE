@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from corpus.agreement.report import MismatchedRecordings, compare
+from corpus.agreement.report import (
+    IncompatibleVersions,
+    MismatchedRecordings,
+    NotIndependent,
+    compare,
+)
+from evidence_engine.domain.shared.provenance import SemanticVersion
 from evidence_engine.domain.shared.taxonomy import ContextualRole, SpeechEventType
 from tests.corpus.conftest import annotation, recording
 
@@ -148,32 +154,34 @@ def test_comparing_two_different_recordings_is_refused() -> None:
 
 
 def test_comparing_a_file_with_itself_is_refused() -> None:
-    """Agreement is between two people; a self-comparison always scores 1."""
+    """Agreement is between two people; a self-comparison always scores 1.
+
+    `NotIndependent` rather than `MismatchedRecordings`: the two files describe
+    the same recording perfectly well, and what they fail to describe is two
+    people - the same failure as comparing against an adjudicated pass.
+    """
     same = recording("ana", [annotation(PAUSE, 0, 400, "ana")])
 
-    with pytest.raises(MismatchedRecordings, match="between two people"):
+    with pytest.raises(NotIndependent, match="between two people"):
         compare(same, same)
 
 
-def test_annotations_under_different_taxonomy_versions_are_flagged() -> None:
-    """A pilot that changes the manual produces exactly this, and the report
-    would otherwise present the change as annotator disagreement."""
-    from dataclasses import replace
+def test_annotations_under_different_taxonomy_versions_are_refused() -> None:
+    """A pilot that changes the manual produces exactly this.
 
-    from evidence_engine.domain.shared.provenance import SemanticVersion
-
-    left = replace(
-        recording("ana", [annotation(PAUSE, 0, 400, "ana")]),
-        taxonomy_version=SemanticVersion(1, 0, 0),
+    Refused rather than noted, and refused at *any* difference. The protocol
+    says a taxonomy change requires re-running Pilot B, and a note at the
+    bottom of a report does not survive being copied into a results table.
+    """
+    left = recording(
+        "ana", [annotation(PAUSE, 0, 400, "ana")], taxonomy_version=SemanticVersion(1, 0, 0)
     )
-    right = replace(
-        recording("beto", [annotation(PAUSE, 0, 400, "beto")]),
-        taxonomy_version=SemanticVersion(1, 1, 0),
+    right = recording(
+        "beto", [annotation(PAUSE, 0, 400, "beto")], taxonomy_version=SemanticVersion(1, 1, 0)
     )
 
-    report = compare(left, right)
-
-    assert any("taxonomy versions" in note for note in report.notes)
+    with pytest.raises(IncompatibleVersions, match="different manuals"):
+        compare(left, right)
 
 
 def test_nothing_matching_at_all_is_called_out(ana) -> None:  # type: ignore[no-untyped-def]

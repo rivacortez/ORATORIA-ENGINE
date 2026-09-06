@@ -8,10 +8,35 @@ Guarded by: tests/unit/test_taxonomy_doc_is_current.py
 
 # Manual de anotacion - Taxonomia de eventos observables v1.0.0
 
-Este documento es el entregable central de la Fase 0. El criterio de salida de
-esa fase es que **dos anotadores puedan aplicar esta taxonomia de forma
-consistente** sobre una muestra piloto, y que las categorias no resueltas
-queden documentadas.
+Este documento es el entregable central de la Fase 0 y publica las 18 clases
+de la taxonomia. **Solo una de sus dos mitades se somete a validacion en la
+Fase 0.5.** El criterio de salida de esa fase es que **dos anotadores apliquen
+de forma consistente las 9 clases del habla** sobre una muestra piloto, y
+que las categorias no resueltas queden documentadas.
+
+## Alcance: cual mitad se valida y cual no
+
+| Mitad | Estado |
+|---|---|
+| 9 clases del habla | Se valida en la Fase 0.5. Sin ejecutar todavia. |
+| 9 clases visuales | Publicadas y sin validar. Entran asi a la Fase 5. |
+
+Los pilotos de la Fase 0.5 son solo de audio: ninguno le muestra un fotograma
+de video a un anotador, asi que nadie ha medido si dos personas aplican igual
+las clases visuales. Se publican igual porque la Fase 5 las va a necesitar, y
+publicadas sin validar no quiere decir provisionales: quiere decir que no
+existe ninguna medicion de consistencia sobre ellas y que ni siquiera esta
+decidido si son eventos. La iluminacion insuficiente es una condicion continua,
+y dos personas marcandola sobre tramos que se solapan estan delimitando, no
+detectando.
+
+La mitad del habla tampoco esta medida aun. Su piloto esta escrito y esperando
+a dos anotadores entrenados; lo que la separa de la otra mitad es que tiene
+piloto, no que ya tenga resultado.
+
+Ninguna frase de este proyecto afirma que "la taxonomia esta validada": toda
+afirmacion de consistencia nombra la mitad de la que habla. El recorte
+completo, con sus tres motivos, esta en `docs/corpus/PILOT_PROTOCOL.md`.
 
 ## Reglas que gobiernan toda la taxonomia
 
@@ -165,6 +190,12 @@ Se asignan **solo** a las clases lexicas: `lexical_filler`, `repetition`, `false
 **Solo el rol `filler` cuenta como defecto.** La expresion cruda se conserva siempre, incluso cuando el rol resulta ser `semantic` (FR-017): sin esos casos no se puede calcular la precision por clase que exige la NFR-003.
 
 ## Clases visuales (FR-019 a FR-022)
+
+**Estas 9 clases estan publicadas y sin validar.** Aparecen completas
+porque la Fase 5 las va a necesitar, no porque alguien haya medido si dos
+anotadores las aplican igual: los pilotos de la Fase 0.5 son solo de audio. Una
+anotacion visual hecha antes de que la Fase 5 corra su propio piloto es una
+anotacion cuya consistencia nadie puede citar.
 
 ### `gaze_toward_camera` - Mirada hacia la camara
 **Prioridad:** P0 · **Modalidad:** video · **Base de deteccion:** geometric

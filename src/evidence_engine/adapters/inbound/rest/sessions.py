@@ -24,8 +24,11 @@ from evidence_engine.adapters.inbound.rest.schemas import (
     CreatedSessionBody,
     CreateSessionBody,
     DeletionReceiptBody,
+    DeletionVerificationBody,
+    InstanceBody,
     NegotiatedCapabilitiesBody,
     SessionStatusBody,
+    UnavailableCapabilityBody,
 )
 from evidence_engine.adapters.inbound.rest.serialization import render_document
 from evidence_engine.application.api import EngineApi
@@ -143,6 +146,42 @@ async def delete_evidence(
 
 
 @router.get(
+    "/sessions/{session_id}/evidence/verification",
+    response_model=DeletionVerificationBody,
+    summary="Check what, if anything, survived a deletion",
+)
+async def verify_deletion(
+    engine: EngineDep, caller: CallerDep, session_id: SessionIdPath
+) -> DeletionVerificationBody:
+    """The read-only counterpart to ``DELETE .../evidence`` (QA-04).
+
+    A separate route, not a field on the deletion response. The consent policy
+    makes verification a call that does not share a code path with deletion,
+    because a check performed by the code that just deleted reports on its own
+    actions; a route the deletion handler cannot reach is how that separation
+    survives the next person to add a convenience.
+
+    Residue is a 200 carrying ``deletion_verified: false``, not a 409. The
+    status describes what happened to the request, and the request succeeded:
+    it asked a question and got an answer. A 409 would make a monitor read "the
+    verification ran and found surviving evidence" as "the verification failed"
+    - opposite conclusions - and put a client into a retry loop against a
+    finding that retrying cannot change.
+    """
+    verification = await engine.delete_evidence.verify(caller, SessionId(session_id))
+    return DeletionVerificationBody(
+        schema_version=_schema_version(engine),
+        session_id=verification.session_id.value,
+        deletion_verified=verification.is_clean,
+        media_objects_remaining=verification.media_objects_remaining,
+        evidence_document_present=verification.evidence_document_present,
+        stream_state_present=verification.stream_state_present,
+        session_marked_deleted=verification.session_marked_deleted,
+        audit_record_present=verification.audit_record_present,
+    )
+
+
+@router.get(
     "/capabilities",
     response_model=CapabilitiesBody,
     summary="List codecs, languages, taxonomies and active schema versions",
@@ -153,6 +192,17 @@ async def read_capabilities(engine: EngineDep, caller: CallerDep) -> Capabilitie
     # production-shaped credentials for a question with no data in the answer.
     del caller
     capabilities = engine.read_capabilities.execute()
+    # Every role this deployment has wired, by the version answering for it -
+    # not from the query above, which reports taxonomy classes rather than
+    # component versions; this reads the runtimes directly, the same two
+    # objects `/health/ready` already reads to build its own checks.
+    models = {
+        role.value: version.value
+        for role, version in {
+            **engine.speech.contributions,
+            **engine.vision.contributions,
+        }.items()
+    }
     return CapabilitiesBody(
         schema_version=str(capabilities.schema_version),
         taxonomy_version=str(capabilities.taxonomy_version),
@@ -163,6 +213,21 @@ async def read_capabilities(engine: EngineDep, caller: CallerDep) -> Capabilitie
         locales=list(capabilities.locales),
         speech_event_types=list(capabilities.speech_event_types),
         visual_event_types=list(capabilities.visual_event_types),
+        emitted_speech_event_types=list(capabilities.emitted_speech_event_types),
+        emitted_visual_event_types=list(capabilities.emitted_visual_event_types),
+        emitted_prosodic_indicators=list(capabilities.emitted_prosodic_indicators),
+        unavailable_capabilities=[
+            UnavailableCapabilityBody(
+                schema_version=str(capabilities.schema_version),
+                kind=absent.kind,
+                name=absent.name,
+                reason=absent.reason.value,
+                detail=absent.detail,
+            )
+            for absent in capabilities.unavailable_capabilities
+        ],
+        models=models,
+        instance=InstanceBody(id=engine.profile.instance_id, hostname=engine.profile.hostname),
     )
 
 

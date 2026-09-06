@@ -79,6 +79,9 @@ export TERM=dumb
   uv run pytest -v --tb=short --color=no
   echo
 
+  echo "=== C9: the core installs and imports alone ==="
+  uv run pytest -m distribution -v --tb=short --color=no
+  echo
   echo "=== pytest: integration only ==="
   uv run pytest -m integration -v --tb=short --color=no
   echo
@@ -90,6 +93,14 @@ export TERM=dumb
     --cov=corpus \
     --cov-branch \
     --cov-report=term
+  echo
+  # The two populations separately, matching the two CI gates. A combined
+  # figure hides drift in whichever is smaller and better covered.
+  echo "=== coverage gate: engine (domain + application), floor 88 ==="
+  uv run coverage report --include='*/evidence_engine/*' --fail-under=88
+  echo
+  echo "=== coverage gate: corpus tooling, floor 95 ==="
+  uv run coverage report --include='*/corpus/*' --fail-under=95
 } 2>&1 | tee "$OUTPUT"
 
 echo

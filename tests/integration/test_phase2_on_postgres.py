@@ -57,7 +57,15 @@ CREATE_BODY = {
     "consent_policy_version": "1.0.0",
 }
 
-SILENT_CHUNK = base64.b64encode(b"\x00\x00" * 2_560).decode("ascii")
+#: One second of 16 kHz mono PCM16, sized from the declaration rather than
+#: guessed at. This was 2 560 frames - 160 ms - declared as 1 000 ms, and
+#: nothing compared the two until `AudioWindow` began refusing a declaration
+#: its payload contradicts. Derived here so the next person who changes the
+#: window length changes one number.
+WINDOW_MS = 1_000
+SAMPLE_RATE_HZ = 16_000
+FRAMES_PER_WINDOW = SAMPLE_RATE_HZ * WINDOW_MS // 1_000
+SILENT_CHUNK = base64.b64encode(b"\x00\x00" * FRAMES_PER_WINDOW).decode("ascii")
 
 
 @pytest.fixture
@@ -112,15 +120,20 @@ async def seeded(
         # The registry is seeded here rather than at process startup: a replica
         # that registered models on boot could silently reintroduce a version an
         # administrator had just disabled.
-        for identifier, modality in (
-            ("deterministic-speech-v1", "audio"),
-            ("deterministic-vision-v1", "video"),
+        # One row per *role*. The scripted speech runtime plays three audio
+        # components and declares three ids; a modality-keyed registry held
+        # one audio row and could not represent that.
+        for identifier, role in (
+            ("deterministic-speech-v1", "recogniser"),
+            ("deterministic-speech-v1-detector", "disfluency_detector"),
+            ("deterministic-speech-v1-prosody", "prosody_estimator"),
+            ("deterministic-vision-v1", "visual_estimator"),
         ):
             db.add(
                 models.ModelVersionRow(
                     id=identifier,
-                    modality=modality,
-                    artifact_digest=f"sha256:deterministic-{modality}",
+                    role=role,
+                    artifact_digest=f"sha256:{identifier}",
                     dataset_version="none",
                     approval=ApprovalState.EVALUATED.value,
                     metrics={},

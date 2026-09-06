@@ -101,8 +101,11 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	pipeline_version VARCHAR(32) NOT NULL,
         	schema_version VARCHAR(32) NOT NULL,
         	payload JSONB NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
-        	PRIMARY KEY (id)
+        	PRIMARY KEY (id),
+        	CONSTRAINT ck_configuration_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null))
         )
     """,
     """
@@ -128,7 +131,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
     """
         CREATE TABLE model_version (
         	id VARCHAR(64) NOT NULL,
-        	modality VARCHAR(16) NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	artifact_digest VARCHAR(128) NOT NULL,
         	dataset_version VARCHAR(64) NOT NULL,
         	approval VARCHAR(24) NOT NULL,
@@ -139,10 +142,10 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         )
     """,
     """
-        CREATE INDEX ix_model_version_modality ON model_version (modality)
+        CREATE INDEX ix_model_version_role ON model_version (role)
     """,
     """
-        CREATE UNIQUE INDEX uq_model_active_per_modality ON model_version (modality) WHERE is_active IS true
+        CREATE UNIQUE INDEX uq_model_active_per_role ON model_version (role) WHERE is_active IS true
     """,
     """
         CREATE TABLE api_key (
@@ -190,6 +193,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	started_at_ms BIGINT NOT NULL,
         	completed_at_ms BIGINT,
         	completed_stages JSONB NOT NULL,
+        	models JSONB NOT NULL,
         	PRIMARY KEY (id),
         	FOREIGN KEY(session_id) REFERENCES analysis_session (id) ON DELETE CASCADE
         )
@@ -256,6 +260,13 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	calibration VARCHAR(16),
         	reason VARCHAR(40),
         	detail TEXT NOT NULL,
+        	role VARCHAR(32) NOT NULL,
+        	model_version VARCHAR(64) NOT NULL,
+        	taxonomy_version VARCHAR(32) NOT NULL,
+        	configuration_id VARCHAR(64) NOT NULL,
+        	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
         	CONSTRAINT ck_prosody_measured_xor_unavailable CHECK ((value is not null and unit is not null and reason is null) or (value is null and reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
@@ -305,11 +316,15 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	confidence FLOAT NOT NULL,
         	calibration VARCHAR(16) NOT NULL,
         	is_final BOOLEAN NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	model_version VARCHAR(64) NOT NULL,
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
         	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
+        	CONSTRAINT ck_speech_event_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
         	CONSTRAINT ck_speech_event_role CHECK (context_role is null or context_role in ('filler','semantic','discourse_marker','uncertain')),
         	CONSTRAINT ck_speech_event_confidence CHECK (confidence between 0 and 1),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
@@ -338,12 +353,16 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	confidence FLOAT NOT NULL,
         	calibration VARCHAR(16) NOT NULL,
         	is_final BOOLEAN NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	model_version VARCHAR(64) NOT NULL,
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
         	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
         	CONSTRAINT ck_visual_event_confidence CHECK (confidence between 0 and 1),
+        	CONSTRAINT ck_visual_event_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
         )
     """,
@@ -362,20 +381,38 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	run_id VARCHAR(64) NOT NULL,
         	tenant_id VARCHAR(64) NOT NULL,
         	raw_text TEXT NOT NULL,
-        	start_ms BIGINT NOT NULL,
-        	end_ms BIGINT NOT NULL,
-        	tolerance_ms INTEGER NOT NULL,
-        	confidence FLOAT NOT NULL,
-        	calibration VARCHAR(16) NOT NULL,
+        	sequence_window_ms BIGINT NOT NULL,
+        	sequence_index INTEGER NOT NULL,
+        	start_ms BIGINT,
+        	end_ms BIGINT,
+        	tolerance_ms INTEGER,
+        	placement_unavailable_reason VARCHAR(64),
+        	placement_unavailable_detail TEXT NOT NULL,
+        	confidence FLOAT,
+        	calibration VARCHAR(16),
+        	confidence_unavailable_reason VARCHAR(64),
+        	confidence_unavailable_detail TEXT NOT NULL,
+        	model_version VARCHAR(64) NOT NULL,
+        	taxonomy_version VARCHAR(32) NOT NULL,
+        	configuration_id VARCHAR(64) NOT NULL,
+        	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	status VARCHAR(16) NOT NULL,
         	PRIMARY KEY (id),
-        	CONSTRAINT ck_token_interval CHECK (end_ms >= start_ms),
-        	CONSTRAINT ck_token_confidence CHECK (confidence between 0 and 1),
+        	CONSTRAINT ck_token_interval CHECK (start_ms is null or end_ms >= start_ms),
+        	CONSTRAINT ck_token_placement_exactly_one_state CHECK ((start_ms is not null and end_ms is not null and tolerance_ms is not null and placement_unavailable_reason is null) or (start_ms is null and end_ms is null and tolerance_ms is null and placement_unavailable_reason is not null)),
+        	CONSTRAINT ck_token_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
+        	CONSTRAINT ck_token_confidence CHECK (confidence is null or confidence between 0 and 1),
+        	CONSTRAINT ck_token_confidence_exactly_one_state CHECK ((confidence is not null and calibration is not null and confidence_unavailable_reason is null) or (confidence is null and calibration is null and confidence_unavailable_reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
         )
     """,
     """
         CREATE INDEX ix_token_run_position ON word_token (run_id, start_ms)
+    """,
+    """
+        CREATE INDEX ix_token_run_sequence ON word_token (run_id, sequence_window_ms, sequence_index)
     """,
     """
         CREATE INDEX ix_word_token_run_id ON word_token (run_id)

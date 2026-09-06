@@ -1,4 +1,9 @@
-# Normalize line endings in the repository; check out native on Windows.
+# LF everywhere: in the repository and in the working tree, Windows included.
+#
+# `eol=lf` is the second half of that and it is deliberate. `text=auto` alone
+# would check out CRLF on Windows, and this repository is developed on Windows
+# and tested on Linux runners - a file that differs between the two is a diff
+# that appears and disappears depending on who looked.
 * text=auto eol=lf
 
 *.py   text eol=lf
@@ -14,3 +19,19 @@ tests/contract/golden/** -text
 *.wav binary
 *.mp4 binary
 *.webm binary
+
+# Captured output, not authored text.
+#
+# Files under docs/evidence are the unedited stdout of a test or pilot run.
+# Their value is that nobody touched them, so git's whitespace checks are
+# turned off here rather than the bytes being tidied to satisfy them: a
+# trailing space inside a pytest progress bar is part of what the run printed,
+# and `git diff --check` flagging it would push somebody toward editing
+# evidence.
+#
+# Appended, not substituted. An earlier version of this change replaced the
+# file wholesale and silently dropped the LF normalization, the byte-for-byte
+# guarantee on the golden fixtures above, and the binary declarations - none of
+# which would have failed a test until a contract test disagreed with itself
+# across two platforms.
+docs/evidence/** -whitespace

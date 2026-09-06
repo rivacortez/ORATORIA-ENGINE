@@ -43,18 +43,24 @@ class WebSocketEventChannel:
     async def publish(self, event: OutboundEvent) -> None:
         await self._socket.send_json(self._frame(event.type, event.session_id, event))
 
-    async def request_backpressure(self, session_id: SessionId, queue_depth: int) -> None:
+    async def request_backpressure(
+        self, session_id: SessionId, queue_depth: int, chunk_seq: int
+    ) -> None:
         """§7.3 ``backpressure.requested`` (FR-010).
 
         Explicit and separate from ``publish`` because it is not evidence - it
         is a flow-control instruction, and a client should be able to handle it
         without parsing an evidence payload.
+
+        ``chunk_seq`` is the refused chunk, named so a client can resend that
+        exact window rather than guessing which of its unacknowledged sends to
+        retry.
         """
         await self._socket.send_json(
             self._frame(
                 ServerMessageType.BACKPRESSURE_REQUESTED,
                 session_id,
-                payload={"queue_depth": queue_depth},
+                payload={"queue_depth": queue_depth, "chunk_seq": chunk_seq},
                 monotonic_time_ms=0,
             )
         )
@@ -86,6 +92,17 @@ class WebSocketEventChannel:
         await self._socket.send_json(
             self._frame(
                 ServerMessageType.SESSION_COMPLETED,
+                session_id,
+                payload=body,
+                monotonic_time_ms=0,
+            )
+        )
+
+    async def send_aborted(self, session_id: SessionId, body: dict[str, Any]) -> None:
+        """§7.3 ``session.aborted``: reply to a client ``session.abort``."""
+        await self._socket.send_json(
+            self._frame(
+                ServerMessageType.SESSION_ABORTED,
                 session_id,
                 payload=body,
                 monotonic_time_ms=0,

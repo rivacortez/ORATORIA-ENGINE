@@ -3,6 +3,15 @@
 ; These are not style rules. Each one guards a claim the specification makes
 ; about the shape of the system (§4.3, §5, NFR-016). A broken contract means
 ; the claim is no longer true, so CI fails before the claim reaches a document.
+;
+; C9 is NOT here, and its absence is deliberate. import-linter reads the
+; source tree, and the ninth claim is about the *distribution*: that
+; `pip install oratoria-evidence-engine` installs a core with no dependencies
+; at all. That was false for the whole project while C2 and C3 were green -
+; the layers were clean and the dependency list carried a web framework, a
+; database driver and an object-store client. No import contract can see a
+; pyproject.toml, so C9 builds the wheel, reads METADATA and installs it in an
+; empty virtual environment: tests/distribution/test_c9_core_installs_alone.py.
 
 [importlinter]
 root_packages =
@@ -14,12 +23,19 @@ include_external_packages = True
 ; C1 - The dependency rule. §4.3: "Adapters -> Application -> Domain".
 ; Bootstrap sits above everything because it is the only place allowed to
 ; know every layer at once: it wires them.
+;
+; `sdk` sits below it and this is the machine-checked form of the SDK's
+; central constraint: the embedded facade composes adapters and must never
+; import `bootstrap`, which wires FastAPI, SQLAlchemy, Redis and an object
+; store. One import would drag the `server` extra into every embedded
+; install and undo C9, so the layering catches it rather than review.
 ; --------------------------------------------------------------------------
 [importlinter:contract:dependency-rule]
-name = C1 - Bootstrap -> Adapters -> Application -> Domain
+name = C1 - Bootstrap -> SDK -> Adapters -> Application -> Domain
 type = layers
 layers =
     evidence_engine.bootstrap
+    evidence_engine.sdk
     evidence_engine.adapters
     evidence_engine.application
     evidence_engine.domain
@@ -124,16 +140,24 @@ forbidden_modules =
     evidence_engine.adapters.outbound
 
 ; --------------------------------------------------------------------------
-; C7 - The corpus tooling shares the taxonomy and nothing else.
+; C7 - The corpus tooling shares the shared kernel and nothing else.
 ;
 ; Sharing the taxonomy is the point: an annotation schema that drifts from the
 ; published allowlist produces disagreement that looks like a hard boundary
-; case and is really a documentation bug. Sharing anything else would let
-; research tooling depend on the service's transaction handling and quotas,
-; and the service is the thing that has to stay deployable.
+; case and is really a documentation bug. `shared` also carries the version
+; primitives the annotation records are stamped with, and that is the whole
+; surface - the corpus knows what a class *means* and what a version *is*,
+; and nothing about how the service runs.
+;
+; The observation packages are listed explicitly rather than left to a
+; comment. Allowing all of `domain` would let the annotation tooling reach
+; into `sessions`, `evidence` or `quality` - the service's own aggregates, its
+; state machine and its ledger - which is neither what the docstrings promise
+; nor anything the corpus has a use for. A contract that permits what its own
+; name forbids is a contract nobody will trust the second time.
 ; --------------------------------------------------------------------------
-[importlinter:contract:corpus-sees-only-the-domain]
-name = C7 - Corpus tooling imports the domain, never the service
+[importlinter:contract:corpus-sees-only-the-shared-kernel]
+name = C7 - Corpus tooling imports the shared kernel, never the rest of the engine
 type = forbidden
 source_modules =
     corpus
@@ -141,6 +165,12 @@ forbidden_modules =
     evidence_engine.application
     evidence_engine.adapters
     evidence_engine.bootstrap
+    evidence_engine.domain.sessions
+    evidence_engine.domain.transcript
+    evidence_engine.domain.speech_events
+    evidence_engine.domain.visual_events
+    evidence_engine.domain.quality
+    evidence_engine.domain.evidence
 
 ; --------------------------------------------------------------------------
 ; C8 - and the service never imports the corpus tooling. A deployed engine
