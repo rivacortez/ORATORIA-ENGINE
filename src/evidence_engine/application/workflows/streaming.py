@@ -30,6 +30,7 @@ from evidence_engine.application.errors import BackpressureRequired
 from evidence_engine.application.ports.platform import ConfigurationSnapshot, Telemetry
 from evidence_engine.application.ports.runtimes import (
     AudioWindow,
+    MisdeclaredAudioWindow,
     SpeechRuntime,
     VisionRuntime,
     VisualFrame,
@@ -52,7 +53,7 @@ from evidence_engine.domain.shared.provenance import Modality, Provenance
 from evidence_engine.domain.shared.timeline import MonotonicTime
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
-from evidence_engine.domain.transcript.tokens import Placement, Timed
+from evidence_engine.domain.transcript.tokens import Placement, Timed, TokenSequence
 from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
@@ -158,6 +159,18 @@ class StreamingCoordinator:
         finally:
             self._state.in_flight -= 1
 
+        if result.window_position_ms != window.session_position_ms:
+            # Every token's sequence is keyed by the position the *result*
+            # reports, and the committed-window rule by the position the
+            # window was handed at. A runtime that reports a different one
+            # would file its words under a window that was never ingested,
+            # and the unplaced ones among them would never settle. Refused
+            # here, loudly, rather than left to surface as a missing word.
+            raise MisdeclaredAudioWindow(
+                f"the speech runtime reported window position {result.window_position_ms} ms "
+                f"for the window handed to it at {window.session_position_ms} ms; a result "
+                "must be filed under the window it was decoded from"
+            )
         self._window_ends[window.session_position_ms] = (
             window.session_position_ms + window.duration_ms
         )
@@ -204,13 +217,25 @@ class StreamingCoordinator:
 
         boundary = MonotonicTime(stable_through_ms)
         transcript = self._state.transcript.finalize_through_time(boundary)
-        settled = [t.sequence for t in transcript.tokens if t.is_timed and t.is_final]
-        committed = [
-            t.sequence
-            for t in transcript.tokens
-            if self._window_committed(t.sequence.window_position_ms, stable_through_ms)
-        ]
-        frontier = max(settled + committed, default=None)
+        # The sequence frontier is the last token before the first one that
+        # is not settled, walking lexical order. A placed word is settled when
+        # the time rule settled it; an unplaced word when its window is
+        # committed. Walking and stopping - rather than taking a maximum -
+        # is what keeps a placed word whose interval reaches past the stable
+        # point out of the frontier: a maximum over committed windows swept it
+        # in, the time frontier then reported audio as frozen that the runtime
+        # had not certified, and the next window's first word was refused as
+        # rewriting it.
+        frontier: TokenSequence | None = None
+        for token in transcript.tokens:
+            settled = (
+                token.is_final
+                if token.is_timed
+                else self._window_committed(token.sequence.window_position_ms, stable_through_ms)
+            )
+            if not settled:
+                break
+            frontier = token.sequence
         if frontier is not None:
             transcript = transcript.finalize_through_sequence(frontier)
         self._state.transcript = transcript
@@ -408,8 +433,12 @@ class StreamingCoordinator:
                     else ServerMessageType.TRANSCRIPT_PARTIAL
                 ),
                 session_id=self._state.session_id,
+                # The latest end among the placed words, not the lexically
+                # last one's: lexical and temporal order agree for most
+                # transcripts and not for all, and the timeline this field
+                # reports must not run backwards between two publishes.
                 monotonic_time_ms=(
-                    placed[-1].interval.end.ms
+                    max(token.interval.end.ms for token in placed)
                     if placed
                     else self._state.transcript.finalized_time_frontier.ms
                 ),

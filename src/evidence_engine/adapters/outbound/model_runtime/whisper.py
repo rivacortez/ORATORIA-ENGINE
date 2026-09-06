@@ -225,7 +225,9 @@ class WhisperSpeechRuntime:
         return SpeechResult(
             contributions=self._contributions,
             window_position_ms=window.session_position_ms,
-            words=self.words_from(output, window.session_position_ms),
+            words=self.words_from(
+                output, window.session_position_ms, window_duration_ms=window.duration_ms
+            ),
             events=(),
             prosody=(),
             # The whole window. Whisper decodes a window in one pass and has no
@@ -241,8 +243,24 @@ class WhisperSpeechRuntime:
         return np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0
 
     @staticmethod
-    def words_from(output: Any, session_position_ms: int) -> tuple[WordHypothesis, ...]:
+    def words_from(
+        output: Any, session_position_ms: int, *, window_duration_ms: int | None = None
+    ) -> tuple[WordHypothesis, ...]:
         """Every word the pipeline reported, placed on the session clock or not.
+
+        **A word stays inside its window.** The pipeline pads every window to
+        30 s of silence, and the alignment heads can close the last word - or
+        open a hallucinated one - inside that padding, past the audio that
+        exists. A word ending past the window is clamped to the window's end:
+        it was heard through the end of the audio and no further, because
+        there was no further. A word *starting* past it was placed in audio
+        that was never there, and is kept with no placement rather than
+        deleted or left where the aligner put it. Without this, the word's
+        interval reached past `stable_through_ms`, the coordinator could
+        neither settle it nor keep it, and the next window's first word was
+        refused as rewriting frozen audio. The adapter always passes the
+        duration; the tests of the other judgement calls pass none and get no
+        clamp.
 
         A static method taking the raw output rather than a private helper,
         because this is where both of the adapter's judgement calls live and
@@ -290,11 +308,29 @@ class WhisperSpeechRuntime:
                 )
                 continue
 
+            start_ms = int(float(start) * 1000)
+            end_ms = int(float(end) * 1000)
+            if window_duration_ms is not None:
+                if start_ms >= window_duration_ms:
+                    words.append(
+                        UntimedWordHypothesis(
+                            raw_text=text,
+                            score=NO_REPORTED_POSTERIOR,
+                            index=len(words),
+                            detail=(
+                                "the alignment heads placed the word past the end of the "
+                                "window's audio, in the silence the pipeline pads to 30 s"
+                            ),
+                        )
+                    )
+                    continue
+                end_ms = min(end_ms, window_duration_ms)
+
             words.append(
                 TimedWordHypothesis(
                     raw_text=text,
-                    start_ms=session_position_ms + int(float(start) * 1000),
-                    end_ms=session_position_ms + int(float(end) * 1000),
+                    start_ms=session_position_ms + start_ms,
+                    end_ms=session_position_ms + end_ms,
                     score=NO_REPORTED_POSTERIOR,
                     index=len(words),
                 )

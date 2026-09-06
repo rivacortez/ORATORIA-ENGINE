@@ -586,6 +586,7 @@ def _unscored() -> object:
     so the translation is tested rather than the model.
     """
     from evidence_engine.application.ports.runtimes import (
+        AudioWindow,
         SpeechResult,
         TimedWordHypothesis,
         UntimedWordHypothesis,
@@ -603,7 +604,7 @@ def _unscored() -> object:
         def contributions(self) -> dict[ModelRole, ModelVersionId]:
             return {ModelRole.RECOGNISER: ModelVersionId("unscored-v1")}
 
-        async def transcribe(self, window: object) -> object:
+        async def transcribe(self, window: AudioWindow) -> object:
             # Re-emits the same two words on every call, because a streaming
             # runtime emits its whole *active region* rather than only what is
             # new: `Transcript.with_provisional` replaces the revisable tail
@@ -611,9 +612,14 @@ def _unscored() -> object:
             # everything not yet finalized. The first version of this fake did
             # exactly that and the words vanished - the same failure
             # `deterministic.py` documents from the first end-to-end run.
+            #
+            # Filed under the window it was handed, as the port requires and
+            # as `deterministic.py` does when it re-emits: the coordinator
+            # refuses a result reported under a window it never ingested. The
+            # second version of this fake reported 0 for every window.
             return SpeechResult(
                 contributions=self.contributions,
-                window_position_ms=0,
+                window_position_ms=window.session_position_ms,
                 words=(
                     TimedWordHypothesis(
                         raw_text="hola", start_ms=0, end_ms=300, score=absent, index=0

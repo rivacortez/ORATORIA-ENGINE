@@ -795,8 +795,26 @@ and nobody knows where - so that stretch is a gap in the alignment, not a
 silence. It now walks lexical order and derives a pause only between two
 placed neighbours.
 
+_The fix overshot._ The first frontier fix took a maximum over committed
+windows, and a review found what that swept in: a _placed_ word whose interval
+reaches past `stable_through_ms` - whisper closing the last word of a window a
+few tens of milliseconds after the window's end, inside the silence the
+pipeline pads to 30 s. The time rule had left it provisional, correctly; the
+maximum finalized it anyway; the time frontier then stood past the certified
+point, and the next window's first word - starting exactly at the boundary -
+was refused as rewriting frozen audio. Ordinary audio would have ended the
+session. The frontier now walks lexical order and stops at the first token
+that is not settled, and the whisper adapter clamps every word to the audio it
+was decoded from: a word closing past the window ends at the window, a word
+opening past it is kept with no placement rather than left in audio that was
+never there. Two smaller findings from the same review sit beside it: the
+event clock is the latest end among the placed words rather than the lexically
+last one's, and a result filed under a window position that was never handed
+out is refused rather than left to lose its unplaced words.
+
 **Cost.** Nothing yet: found by reading the publisher before a real session
-ran through it, and the third copy by the regression for the first two.
+ran through it, the third copy by the regression for the first two, and the
+overshoot by a fresh review of the fix.
 **Rule.** The one §4.14 already states, applied again, with "every layer" now
 including the live path driven by a runtime shaped like the real one - one
 window, its own words, stable through its end. The frontier is stated from

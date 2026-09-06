@@ -296,6 +296,14 @@ class SpeechResult:
     #: stateless assembler can build a session-global token sequence from a
     #: per-window emission index without being told the window separately -
     #: two arguments that could disagree are two arguments that will.
+    #:
+    #: Always the position of the window the runtime was *handed*, including
+    #: when the result re-emits words from an earlier window as part of its
+    #: active region. The coordinator files each ingested window's end under
+    #: this key to decide when the words of that window - the unplaced ones
+    #: in particular - are settled, and refuses a result reported under any
+    #: other position rather than let those words wait for a window that
+    #: never arrives.
     window_position_ms: int = 0
     words: tuple[WordHypothesis, ...] = field(default_factory=tuple)
     events: tuple[SpeechEventHypothesis, ...] = field(default_factory=tuple)
