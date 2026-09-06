@@ -10,8 +10,11 @@ coupled to the domain's shape anyway. A leak through a field is still a leak.
 So the SDK returns its own types, and they mirror **the wire** rather than the
 domain. That choice is what makes the local and hosted paths comparable at all:
 a consumer reading `result.transcript.words[0].placement` locally and a consumer
-parsing `GET /v1/sessions/{id}/result` are looking at the same shape, and the
-day `OratoriaClient` exists it can return these unchanged.
+parsing `GET /v1/sessions/{id}/result` are looking at the same shape.
+`evidence_from_json` below is what makes that literal: it builds the same
+`Evidence` from the REST document that `OratoriaClient` polls, and
+`tests/contract/test_remote_client.py` asserts the two are equal for one
+document - the conformance test ADR-011 deferred until this client existed.
 
 Two encodings are preserved rather than flattened, because flattening them is
 the failure FR-025 exists to prevent.
@@ -23,11 +26,23 @@ unknown", a state no aligner produces.
 *A confidence exists or it does not.* whisper-large-v3 reports no per-word
 posterior, so most words carry ``ConfidenceUnavailable``. A ``float | None``
 here would become ``0.0`` in the first chart somebody drew.
+
+**What `Evidence` deliberately does not carry.** The wire's `cooccurrences`
+and `quality` sections have no counterpart here. Adding them was in scope for
+the client work that added `evidence_from_json`, and was deliberately left
+out: neither `Cooccurrence` nor `Quality` had a public SDK shape to translate
+into, and inventing one to fill two fields nothing in this change reads would
+be scope this task was not asked to cover. The next consumer that needs
+either extends `Evidence` and `evidence_from_json` (and, for parity,
+`evidence_from`) together, in the same change - not as an afterthought to one
+of them.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from evidence_engine.domain.evidence.document import EvidenceDocument
 from evidence_engine.domain.shared.confidence import Confidence as _Confidence
@@ -349,4 +364,158 @@ def evidence_from(document: EvidenceDocument) -> Evidence:
         speech_events=tuple(_speech_event(e) for e in document.speech_events),
         visual_events=tuple(_visual_event(e) for e in document.visual_events),
         prosody=tuple(_prosody(r) for r in document.prosody),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Translation from the wire (OratoriaClient's path)
+# ---------------------------------------------------------------------------
+
+
+def _word_from_json(token: Mapping[str, object]) -> Word:
+    placement: WordPlacement
+    if token["placed"]:
+        placement = TimedPlacement(
+            start_ms=int(cast(int, token["start_ms"])),
+            end_ms=int(cast(int, token["end_ms"])),
+            tolerance_ms=int(cast(int, token["tolerance_ms"])),
+        )
+    else:
+        placement = AlignmentUnavailable(
+            reason=str(token["placement_unavailable_reason"]),
+            detail=str(token.get("placement_unavailable_detail", "")),
+        )
+
+    confidence: WordConfidence
+    if token["confidence_available"]:
+        confidence = Confidence(
+            value=float(cast(float, token["confidence"])), calibration=str(token["calibration"])
+        )
+    else:
+        confidence = ConfidenceUnavailable(
+            reason=str(token["confidence_unavailable_reason"]),
+            detail=str(token.get("confidence_unavailable_detail", "")),
+        )
+
+    sequence = cast(list[object], token["sequence"])
+    return Word(
+        id=str(token["id"]),
+        sequence=(int(cast(int, sequence[0])), int(cast(int, sequence[1]))),
+        text=str(token["raw_text"]),
+        placement=placement,
+        confidence=confidence,
+        model_version=str(token["model_version"]),
+        status=str(token["status"]),
+    )
+
+
+def _transcript_from_json(payload: Mapping[str, object]) -> Transcript:
+    tokens = cast(list[Mapping[str, object]], payload["tokens"])
+    return Transcript(
+        raw_text=str(payload["raw_text"]),
+        words=tuple(_word_from_json(token) for token in tokens),
+        finalized_through_ms=int(cast(int, payload["finalized_through_ms"])),
+        unaligned_count=int(cast(int, payload["unaligned_token_count"])),
+    )
+
+
+def _required_confidence_from_json(payload: Mapping[str, object]) -> Confidence:
+    return Confidence(
+        value=float(cast(float, payload["confidence"])), calibration=str(payload["calibration"])
+    )
+
+
+def _optional_str(payload: Mapping[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    return str(value) if value is not None else None
+
+
+def _speech_event_from_json(payload: Mapping[str, object]) -> SpeechEvent:
+    return SpeechEvent(
+        id=str(payload["id"]),
+        type=str(payload["type"]),
+        start_ms=int(cast(int, payload["start_ms"])),
+        end_ms=int(cast(int, payload["end_ms"])),
+        tolerance_ms=int(cast(int, payload["tolerance_ms"])),
+        confidence=_required_confidence_from_json(payload),
+        raw_text=str(payload["raw_text"]),
+        context_role=_optional_str(payload, "context_role"),
+        counts_as_disfluency=bool(payload["counts_as_disfluency"]),
+    )
+
+
+def _visual_event_from_json(payload: Mapping[str, object]) -> VisualEvent:
+    return VisualEvent(
+        id=str(payload["id"]),
+        type=str(payload["type"]),
+        start_ms=int(cast(int, payload["start_ms"])),
+        end_ms=int(cast(int, payload["end_ms"])),
+        tolerance_ms=int(cast(int, payload["tolerance_ms"])),
+        confidence=_required_confidence_from_json(payload),
+        direction=_optional_str(payload, "direction"),
+        describes_capture_quality=bool(payload["describes_capture_quality"]),
+    )
+
+
+def _indicator_from_json(payload: Mapping[str, object]) -> Indicator:
+    if "value" in payload:
+        return Value(
+            value=float(cast(float, payload["value"])),
+            unit=str(payload["unit"]),
+            confidence=_required_confidence_from_json(payload),
+        )
+    return ValueUnavailable(reason=str(payload["reason"]), detail=str(payload.get("detail", "")))
+
+
+def _prosody_from_json(payload: Mapping[str, object]) -> ProsodyReading:
+    return ProsodyReading(
+        indicator=str(payload["indicator"]),
+        start_ms=int(cast(int, payload["start_ms"])),
+        end_ms=int(cast(int, payload["end_ms"])),
+        value=_indicator_from_json(payload),
+    )
+
+
+def evidence_from_json(payload: Mapping[str, object]) -> Evidence:
+    """Translate the REST document into the public shape - the wire's own twin
+    of `evidence_from`.
+
+    This is what `OratoriaClient` builds its `AnalysisResult.evidence` from,
+    after polling `GET /v1/sessions/{id}/result`; the input is exactly that
+    endpoint's JSON body (the same dict `adapters.inbound.rest.serialization
+    .render_document` produces), not a domain object - there is no domain to
+    hand a remote client, only bytes.
+
+    Four renamings undo what the wire's own naming did for readability there:
+    `raw_text` becomes `text` on a word (matching `Word.text`), the wire's
+    two-element `sequence` list becomes a `tuple[int, int]`, the disjoint
+    `placed`/`confidence_available` key pairs become the `TimedPlacement |
+    AlignmentUnavailable` and `Confidence | ConfidenceUnavailable` unions, and
+    `unaligned_token_count` becomes `unaligned_count`. The manifest's `models`
+    mapping is carried verbatim - it is already `{role: version}` strings on
+    both sides.
+
+    Fields the wire lacks must not be invented here: see the module
+    docstring for what `Evidence` deliberately does not carry.
+    """
+    manifest_payload = cast(Mapping[str, object], payload["manifest"])
+    manifest = Manifest(
+        pipeline_version=str(manifest_payload["pipeline_version"]),
+        schema_version=str(manifest_payload["schema_version"]),
+        taxonomy_version=str(manifest_payload["taxonomy_version"]),
+        configuration_id=str(manifest_payload["configuration_id"]),
+        models=dict(cast(Mapping[str, str], manifest_payload["models"])),
+    )
+    speech_events = cast(list[Mapping[str, object]], payload["speech_events"])
+    visual_events = cast(list[Mapping[str, object]], payload["visual_events"])
+    prosody = cast(list[Mapping[str, object]], payload["prosody"])
+    return Evidence(
+        session_id=str(payload["session_id"]),
+        run_id=str(payload["run_id"]),
+        ranking_authority=str(payload["ranking_authority"]),
+        manifest=manifest,
+        transcript=_transcript_from_json(cast(Mapping[str, object], payload["transcript"])),
+        speech_events=tuple(_speech_event_from_json(e) for e in speech_events),
+        visual_events=tuple(_visual_event_from_json(e) for e in visual_events),
+        prosody=tuple(_prosody_from_json(r) for r in prosody),
     )

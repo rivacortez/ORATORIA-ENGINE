@@ -387,6 +387,20 @@ class UnavailableCapabilityBody(Envelope):
     detail: str
 
 
+class InstanceBody(BaseModel):
+    """Which physical instance answered.
+
+    The pilot topology is one engine per GPU workstation, and a client
+    talking to more than one needs to attribute a result to the machine that
+    produced it - the same reason `session.accepted` carries ``instance_id``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    hostname: str
+
+
 class CapabilitiesBody(Envelope):
     """``GET /v1/capabilities``."""
 
@@ -419,6 +433,17 @@ class CapabilitiesBody(Envelope):
     #: §17's contract invariant, published. A consumer reading `"none"` knows
     #: no ranking will ever appear here and builds its own.
     ranking_authority: str = EvidenceDocument.ranking_authority
+
+    #: Every role this deployment has wired, by the version answering for it
+    #: right now - the union of `engine.speech.contributions` and
+    #: `engine.vision.contributions`. Distinct from `emitted_speech_event_types`
+    #: and friends: those say which *taxonomy classes* a role can produce,
+    #: this says *which version* of the role is running, which is what a
+    #: caller needs to tell two deployments of the same engine apart.
+    models: dict[str, str]
+    #: Which physical instance answered. The pilot topology can run more than
+    #: one GPU workstation behind the same consuming application.
+    instance: InstanceBody
 
 
 class ErrorBody(Envelope):

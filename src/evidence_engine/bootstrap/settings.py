@@ -12,6 +12,7 @@ possible discovery of a missing secret.
 
 from __future__ import annotations
 
+import socket
 from enum import StrEnum
 
 from pydantic import Field, field_validator
@@ -79,6 +80,15 @@ class Settings(BaseSettings):
     environment: str = "local"
     backend: Backend = Backend.MEMORY
     runtime_mode: RuntimeMode = RuntimeMode.DETERMINISTIC
+
+    #: This instance's identity on `/v1/capabilities` and every
+    #: `session.accepted` - the pilot topology is one engine per GPU
+    #: workstation, and a client talking to more than one needs to tell them
+    #: apart in its own records. Defaults to the hostname, which is a stable,
+    #: sysadmin-visible identifier on a workstation and a bad one in a
+    #: container, where it is usually a random id that changes every restart;
+    #: set this explicitly there.
+    instance_id: str = Field(default_factory=socket.gethostname)
 
     #: Where the managed runtime runs. `cuda` unless a deployment says
     #: otherwise; `cpu` works and is roughly thirty times slower, which is not

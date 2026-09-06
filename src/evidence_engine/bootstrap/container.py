@@ -14,6 +14,7 @@ this port?" stops having an answer you can read.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
@@ -193,6 +194,13 @@ class Container:
     #: the database connection pool, the Redis client. Empty for the memory
     #: backend, which holds nothing.
     closers: tuple[Callable[[], Awaitable[None]], ...] = field(default_factory=tuple)
+    #: `None` until the ASGI lifespan's startup warm-up decode completes, then
+    #: how long it took. Mutable and set from outside the constructor - the
+    #: container is built before the app exists to run a lifespan against, so
+    #: nothing at construction time has decoded anything yet. `/health/ready`
+    #: reads this directly rather than through a use case, because it is
+    #: process state, not evidence.
+    speech_warm_seconds: float | None = None
 
     async def aclose(self) -> None:
         """Release every held resource.
@@ -340,6 +348,8 @@ def build_container(
             runtime_mode=settings.runtime_mode.value,
             max_queue_depth=settings.max_queue_depth,
             stream_lease_ttl_seconds=settings.stream_lease_ttl_seconds,
+            instance_id=settings.instance_id,
+            hostname=socket.gethostname(),
         ),
         clock=resolved_clock,
         telemetry=telemetry,

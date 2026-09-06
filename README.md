@@ -207,6 +207,55 @@ contract would have found it.
 | NFR-013 — tenants are invisible to each other          | Every repository read takes a tenant in its signature; another tenant's session is _not found_, never _forbidden_.                               |
 | §14.2 — uncalibrated scores open no gates              | `Confidence.meets` refuses an uncalibrated value, so FR-022's precision gate cannot be opened by an unevaluated detector.                        |
 
+## Two ways to run it, one surface either way
+
+ADR-011: the engine embeds in a consumer's own process, or runs as a hosted
+service a consumer reaches over the network. Both shapes expose the same two
+protocols - `warmup` / `create_stream` / `aclose` on the engine, `send_audio`
+/ `receive` / `pending` / `finish` / `abort` on the session it returns - so
+code written against one runs against the other unchanged.
+
+**Embedded** (`pip install "oratoria-evidence-engine[local]"`, plus torch from
+the index your card needs):
+
+```python
+from evidence_engine import EngineConfiguration, OratoriaEngine
+
+engine = OratoriaEngine.local(EngineConfiguration(runtime="baseline_whisper"))
+await engine.warmup()
+
+stream = engine.create_stream()
+await stream.send_audio(chunk, is_final=True)
+result = await stream.finish()
+
+print(result.evidence.transcript.raw_text)
+await engine.aclose()
+```
+
+**Remote** (`pip install "oratoria-evidence-engine[client]"`) - the pilot
+topology: the engine on a GPU workstation, the consumer on CPU
+infrastructure, talking over HTTP and WebSocket:
+
+```python
+from evidence_engine import OratoriaClient
+
+client = OratoriaClient("https://engine.internal:8443", api_key)
+await client.warmup()   # confirms the remote engine is ready; never falls back
+
+stream = client.create_stream()
+await stream.send_audio(chunk, is_final=True)
+result = await stream.finish()
+
+print(result.evidence.transcript.raw_text)
+await client.aclose()
+```
+
+`stream.send_audio()` returns `False` on backpressure - the caller resends the
+same window, not a new one. See ADR-011's amendment and
+`docs/BUILD_RECORD.md` §3.21 for what changed on the server to make that safe
+over a network with no positive per-chunk acknowledgement, and for the one
+residual risk that leaves.
+
 ## Quick start
 
 ```bash

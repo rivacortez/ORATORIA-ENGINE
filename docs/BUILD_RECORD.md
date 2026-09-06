@@ -524,6 +524,70 @@ test turned red; the touched files were restored and compared by digest. On the
 deterministic runtime the detector is `deterministic-speech-v1-detector`,
 because a `model_version` row is the primary key and carries one role.
 
+### 3.21 The client is the SDK's second implementation of one surface
+
+**Decision.** `OratoriaClient` (`sdk/client.py`) satisfies the same two
+structural protocols the embedded `OratoriaEngine`/`StreamSession` pair
+already satisfies - `warmup`, `create_stream`, `aclose`, `contributions` on
+the engine side; `send_audio`, `receive`, `pending`, `finish`, `abort` on the
+session side - so OratorIA's own adapter, written once against the embedded
+engine, drives a hosted one unchanged. ADR-011 deferred this exact client and
+named the test it would have to pass; this closes that deferral, and the
+amendment to ADR-011 records it.
+
+**The pilot condition this exists for.** The engine runs as a private service
+on a GPU workstation; OratorIA's backend runs on CPU infrastructure and
+consumes it over HTTP and WebSocket. Nothing about that topology was
+reachable from this repository before now - the embedded path needs the GPU
+in the same process, and the hosted path had a server with no client that
+spoke to it from Python.
+
+**Why the transport is injectable.** `Transport` is three methods -
+`post_json`, `get_json`, `ws_connect` - and `OratoriaClient` never imports
+`httpx` or `websockets` at module scope. Both are lazy, behind
+`evidence_engine._extras.require("client")`, resolved only when the default
+`HttpxTransport` is actually constructed. Two consequences follow: the
+contract tests replay scripted wire shapes against a fake transport with no
+socket at all, and a consumer already running one of these libraries under
+another wrapper is not forced to carry a second copy for this one client.
+
+**The backpressure-without-loss rule, restated for a client with no positive
+ack.** S1 changed the server so a refused chunk is never marked seen -
+`StreamingCoordinator._admit` now runs before `offer()`, and
+`backpressure.requested` names the refused `chunk_seq`. The client's half of
+that contract: it keeps exactly one thing, the bytes of the most recently
+sent chunk, and on the next `send_audio` call - if a refusal is pending -
+resends those bytes under their original sequence number and returns
+`False`, never touching the caller's new window. That mirrors the embedded
+engine's own contract for backpressure exactly, which is what makes the two
+paths interchangeable rather than similar.
+
+**The residual risk, named rather than hidden.** A refusal for the very last
+chunk can arrive after the caller has already called `finish()`. `finish()`
+resends whatever is still marked refused before it sends `session.complete`,
+which closes the common case - but if that refusal is still in flight and
+unread when `finish()` moves on, it is missed. There is no per-chunk positive
+acknowledgement on this wire to close the gap with; adding one is future
+work, not something this change invents to avoid admitting the gap.
+
+**What runs and what does not.** All thirteen `tests/contract/test_remote_
+client.py` cases exercise a fake transport except two: the conformance test,
+which streams the same scripted session through both the hosted app and the
+embedded engine and asserts `evidence_from_json` and `evidence_from` agree
+field for field (excluding the identifiers and stamps that differ by
+construction - the same exclusion `test_sdk_surface.py`'s own determinism
+test already documents), and one end-to-end test against a real `uvicorn.
+Server` bound to an ephemeral port in a background thread. Neither needs
+infrastructure - memory backend, deterministic runtimes - so neither is
+marked `integration`.
+
+**What was deliberately left out.** `Evidence` gained no `cooccurrences` and
+no `quality` field; the wire renders both and this change does not translate
+either, because inventing a public shape for two fields nothing here reads
+would be scope beyond what was asked. `sdk/results.py`'s module docstring
+says so, next to `evidence_from_json`, so the gap is findable at the
+definition site and not only in this record.
+
 ---
 
 ## 4. Mistakes, and what they cost

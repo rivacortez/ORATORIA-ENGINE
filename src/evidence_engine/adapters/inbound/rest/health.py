@@ -69,6 +69,19 @@ async def ready(engine: EngineDep) -> JSONResponse:
     checks["backend"] = engine.profile.backend
     checks["runtime_mode"] = engine.profile.runtime_mode
 
+    # A wired recogniser answering `active_for()` above says a version is
+    # *registered* - it says nothing about whether a decode actually runs.
+    # The startup warm-up in `bootstrap.app` is the one thing that checks
+    # that, once, and this reports what it found: "unavailable" until it has,
+    # so a probe reaching this deployment before its first decode gets a 503
+    # rather than a 200 that sends it traffic the model has never proven it
+    # can serve.
+    checks["speech:warm"] = (
+        f"warm ({engine.speech_warm_seconds:.1f} s)"
+        if engine.speech_warm_seconds is not None
+        else "unavailable (warming up)"
+    )
+
     is_ready = all(not value.startswith("unavailable") for value in checks.values())
     body = HealthBody(status="ready" if is_ready else "not_ready", checks=checks)
     return JSONResponse(

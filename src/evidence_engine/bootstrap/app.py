@@ -8,6 +8,7 @@ instance; a module-level singleton would force those tests to reach around it.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -16,8 +17,55 @@ from fastapi import FastAPI
 
 from evidence_engine.adapters.inbound.rest import administration, errors, health, sessions
 from evidence_engine.adapters.inbound.websocket import handler as stream_handler
+from evidence_engine.application.ports.runtimes import AudioWindow
 from evidence_engine.bootstrap.container import SCHEMA_VERSION, Container, build_container
 from evidence_engine.bootstrap.settings import Settings
+
+#: The engine's working decode rate (16 kHz mono 16-bit PCM) and the warm-up
+#: window's length. The same shape `sdk.engine._silent_window` uses for
+#: `OratoriaEngine.warmup()` - restated here rather than imported, so this
+#: composition root does not acquire a dependency on the SDK for one constant.
+_WARM_UP_SAMPLE_RATE_HZ = 16_000
+_WARM_UP_DURATION_MS = 200
+
+
+def _silent_warm_up_window() -> AudioWindow:
+    frames = _WARM_UP_SAMPLE_RATE_HZ * _WARM_UP_DURATION_MS // 1_000
+    return AudioWindow(
+        session_position_ms=0,
+        duration_ms=_WARM_UP_DURATION_MS,
+        sample_rate_hz=_WARM_UP_SAMPLE_RATE_HZ,
+        samples=b"\x00\x00" * frames,
+    )
+
+
+async def _warm_up_speech(container: Container) -> None:
+    """Decode 200 ms of silence through the wired speech runtime, once.
+
+    A wired recogniser is not evidence that inference works here - the
+    weights can be missing, corrupt, or on a driver too old for a compiled
+    kernel - and `/health/ready` refusing traffic until a real decode has
+    happened is the server-side twin of why `sdk.engine.OratoriaEngine`
+    exposes `warmup()` as a call distinct from construction (ADR-011).
+
+    Not wrapped in ``asyncio.to_thread``: unlike the SDK's embedded path,
+    there is no *load* step to move off the loop here - `build_container`
+    already built and loaded the runtime synchronously, before uvicorn's
+    event loop exists to be blocked by it. The decode call is awaited
+    directly because the port is already async, and the one adapter that
+    talks to a real GPU (`WhisperSpeechRuntime.transcribe`) already runs its
+    blocking work through `asyncio.to_thread` internally.
+
+    Left uncaught on purpose. A caught exception would need a third
+    `checks["speech:warm"]` state - "tried and failed" - that nothing in this
+    change asks for, and starting a service whose only recogniser cannot
+    decode is the condition this project's "never fall back to anything"
+    rule exists to refuse loudly rather than serve degraded.
+    """
+    started = time.monotonic()
+    await container.speech.transcribe(_silent_warm_up_window())
+    container.speech_warm_seconds = time.monotonic() - started
+
 
 TITLE = "OratorIA Multimodal Evidence Engine"
 
@@ -134,6 +182,7 @@ def create_app(container: Container | None = None, settings: Settings | None = N
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = resolved
+        await _warm_up_speech(resolved)
         try:
             yield
         finally:

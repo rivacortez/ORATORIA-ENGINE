@@ -37,6 +37,7 @@ loaded gun by an `__init__`.
 
 from __future__ import annotations
 
+from evidence_engine.sdk.client import OratoriaClient
 from evidence_engine.sdk.configuration import (
     DEFAULT_SAMPLE_RATE_HZ,
     DEFAULT_WINDOW_SECONDS,
@@ -49,6 +50,7 @@ from evidence_engine.sdk.errors import (
     EngineNotWarmed,
     LocalInferenceUnavailable,
     OratoriaError,
+    RemoteEngineUnavailable,
     StreamAlreadyClosed,
 )
 from evidence_engine.sdk.preflight import HardwareReport
@@ -94,11 +96,13 @@ __all__ = [
     "HardwareReport",
     "LocalInferenceUnavailable",
     "Manifest",
-    # The facade
+    # The facade, and its remote twin (ADR-011's deferred client)
+    "OratoriaClient",
     "OratoriaEngine",
     # Errors
     "OratoriaError",
     "ProsodyReading",
+    "RemoteEngineUnavailable",
     "SessionConfiguration",
     "SpeechEvent",
     "StreamAlreadyClosed",

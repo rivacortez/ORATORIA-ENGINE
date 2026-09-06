@@ -58,6 +58,16 @@ local = [
     "soundfile>=0.12",
     "librosa>=0.10",
 ]
+# The remote client: `OratoriaClient` speaks HTTP and WebSocket to a hosted
+# engine over the network (the pilot topology - the engine on a GPU
+# workstation, OratorIA's backend on CPU infrastructure) instead of running
+# the pipeline in this process. Two dependencies, both small, both imported
+# lazily by `evidence_engine.sdk.client` through `evidence_engine._extras`, so
+# the core still installs alone and C9 stays green.
+client = [
+    "httpx>=0.28",
+    "websockets>=13",
+]
 # Corpus construction, annotation and agreement. Deliberately empty: the whole
 # of `src/corpus` imports nothing but the standard library, which is worth
 # knowing rather than worth hiding. Declared anyway so the install line is

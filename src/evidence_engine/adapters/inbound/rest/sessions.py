@@ -25,6 +25,7 @@ from evidence_engine.adapters.inbound.rest.schemas import (
     CreateSessionBody,
     DeletionReceiptBody,
     DeletionVerificationBody,
+    InstanceBody,
     NegotiatedCapabilitiesBody,
     SessionStatusBody,
     UnavailableCapabilityBody,
@@ -191,6 +192,17 @@ async def read_capabilities(engine: EngineDep, caller: CallerDep) -> Capabilitie
     # production-shaped credentials for a question with no data in the answer.
     del caller
     capabilities = engine.read_capabilities.execute()
+    # Every role this deployment has wired, by the version answering for it -
+    # not from the query above, which reports taxonomy classes rather than
+    # component versions; this reads the runtimes directly, the same two
+    # objects `/health/ready` already reads to build its own checks.
+    models = {
+        role.value: version.value
+        for role, version in {
+            **engine.speech.contributions,
+            **engine.vision.contributions,
+        }.items()
+    }
     return CapabilitiesBody(
         schema_version=str(capabilities.schema_version),
         taxonomy_version=str(capabilities.taxonomy_version),
@@ -214,6 +226,8 @@ async def read_capabilities(engine: EngineDep, caller: CallerDep) -> Capabilitie
             )
             for absent in capabilities.unavailable_capabilities
         ],
+        models=models,
+        instance=InstanceBody(id=engine.profile.instance_id, hostname=engine.profile.hostname),
     )
 
 

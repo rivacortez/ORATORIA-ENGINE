@@ -133,13 +133,15 @@ class RecordingEventChannel:
 
     def __init__(self) -> None:
         self.published: list[OutboundEvent] = []
-        self.backpressure_requests: list[tuple[SessionId, int]] = []
+        self.backpressure_requests: list[tuple[SessionId, int, int]] = []
 
     async def publish(self, event: OutboundEvent) -> None:
         self.published.append(event)
 
-    async def request_backpressure(self, session_id: SessionId, queue_depth: int) -> None:
-        self.backpressure_requests.append((session_id, queue_depth))
+    async def request_backpressure(
+        self, session_id: SessionId, queue_depth: int, chunk_seq: int
+    ) -> None:
+        self.backpressure_requests.append((session_id, queue_depth, chunk_seq))
 
     def of_type(self, message_type: str) -> list[OutboundEvent]:
         return [event for event in self.published if event.type.value == message_type]

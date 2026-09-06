@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from evidence_engine.adapters.outbound.model_runtime.whisper import WhisperSpeechRuntime
 from evidence_engine.application.queries.read_session import ReadCapabilities
+from evidence_engine.bootstrap.container import Container
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason
 from evidence_engine.domain.shared.provenance import SemanticVersion
@@ -149,3 +150,24 @@ def test_the_published_body_carries_all_three_lists(
         "unavailable_capabilities",
     ):
         assert key in body, key
+
+
+def test_capabilities_publishes_wired_model_versions_and_instance_identity(
+    client: TestClient, auth: dict[str, str], container: Container
+) -> None:
+    """S4: two questions a pilot with more than one workstation has to ask.
+
+    ``models`` is keyed by *role* and not by modality, for the reason the
+    document's own manifest is (§3.20): one audio entry could not show a
+    disfluency detector running beside a fixed recogniser. ``instance`` is
+    the same identity `session.accepted` now carries, published where a
+    caller checking compatibility before integrating would look first.
+    """
+    body = client.get("/v1/capabilities", headers=auth).json()
+
+    assert body["models"]["recogniser"] == "deterministic-speech-v1"
+    assert body["models"]["visual_estimator"] == "deterministic-vision-v1"
+    assert body["instance"] == {
+        "id": container.profile.instance_id,
+        "hostname": container.profile.hostname,
+    }

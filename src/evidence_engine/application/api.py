@@ -66,6 +66,13 @@ class RuntimeProfile:
     runtime_mode: str
     max_queue_depth: int
     stream_lease_ttl_seconds: int
+    #: This process's identity, published on `/v1/capabilities` and on every
+    #: `session.accepted`. A pilot running the engine on more than one GPU
+    #: workstation needs to attribute a result to the machine that produced
+    #: it - `instance_id` names it, `hostname` is the operating-system answer
+    #: regardless of what `instance_id` was configured to.
+    instance_id: str
+    hostname: str
 
 
 class EngineApi(Protocol):
@@ -78,6 +85,12 @@ class EngineApi(Protocol):
     """
 
     profile: RuntimeProfile
+    #: Seconds the startup warm-up decode took, or `None` before it has
+    #: completed. `/health/ready` refuses traffic while this is `None`: a
+    #: wired recogniser that has never actually decoded is not yet evidence
+    #: that inference works here, by the same reasoning `sdk.engine.warmup()`
+    #: is a separate method from `hardware_preflight()` (ADR-011).
+    speech_warm_seconds: float | None
 
     # Ports a transport needs to build a per-connection pipeline or to
     # authenticate before any use case is reachable.

@@ -47,14 +47,21 @@ class _Engine:
     vision: _Runtime
     registry: _Registry
     profile: _Profile
+    #: Defaults to "already warm" so every test in this file that is not
+    #: about warm-up keeps testing the one thing it names: the recogniser
+    #: gate, not the warm-up gate.
+    speech_warm_seconds: float | None = 2.5
 
 
-def _engine(speech: Mapping[ModelRole, ModelVersionId]) -> _Engine:
+def _engine(
+    speech: Mapping[ModelRole, ModelVersionId], *, speech_warm_seconds: float | None = 2.5
+) -> _Engine:
     return _Engine(
         speech=_Runtime(contributions=speech),
         vision=_Runtime(contributions={ModelRole.VISUAL_ESTIMATOR: ModelVersionId("vision-v1")}),
         registry=_Registry(),
         profile=_Profile(),
+        speech_warm_seconds=speech_warm_seconds,
     )
 
 
@@ -78,3 +85,38 @@ async def test_a_recogniser_only_deployment_is_ready() -> None:
     assert body["status"] == "ready"
     assert body["checks"]["model:recogniser"] == "ready (recogniser-v1)"
     assert body["checks"]["model:context_classifier"] == "absent (not wired in this deployment)"
+
+
+async def test_a_wired_recogniser_that_has_not_decoded_yet_is_not_ready() -> None:
+    """S4: a registered version is not evidence that a decode has run.
+
+    `active_for()` above answers from the registry, which a deployment
+    populates at wiring time - before anything has been asked to transcribe a
+    single sample. `/health/ready` has to say the two are different claims,
+    or a probe reaching this instance during its startup warm-up gets a 200
+    for a model that has never actually run.
+    """
+    response = await ready(  # type: ignore[arg-type]
+        _engine(
+            speech={ModelRole.RECOGNISER: ModelVersionId("asr-v1")},
+            speech_warm_seconds=None,
+        )
+    )
+
+    assert response.status_code == 503
+    body = json.loads(bytes(response.body))
+    assert body["status"] == "not_ready"
+    assert body["checks"]["speech:warm"] == "unavailable (warming up)"
+
+
+async def test_a_completed_warm_up_reports_how_long_it_took() -> None:
+    response = await ready(  # type: ignore[arg-type]
+        _engine(
+            speech={ModelRole.RECOGNISER: ModelVersionId("asr-v1")},
+            speech_warm_seconds=3.25,
+        )
+    )
+
+    assert response.status_code == 200
+    body = json.loads(bytes(response.body))
+    assert body["checks"]["speech:warm"] == "warm (3.2 s)"

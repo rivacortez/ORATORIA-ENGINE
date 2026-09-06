@@ -61,6 +61,21 @@ class CaptureControl:
         await self._sessions.save(updated)
         return updated
 
+    async def abort(self, caller: AuthenticatedCaller, session_id: SessionId) -> AnalysisSession:
+        """§7.2 ``session.abort``: end capture as a whole-session failure.
+
+        Distinct from `CompleteSession`, which reconciles and assembles
+        evidence. A client sending this is saying no valid result should be
+        produced at all - not "give me what you have" - and `fail()` is the
+        transition the aggregate reserves exactly for that. It is never used
+        for one modality dropping out mid-session; §6.3 and QA-02 keep that
+        case alive on the surviving modality instead.
+        """
+        context = await self._resolve(caller, session_id)
+        updated = context.session.fail(context.wall_ms)
+        await self._sessions.save(updated)
+        return updated
+
     async def _resolve(self, caller: AuthenticatedCaller, session_id: SessionId) -> _CaptureContext:
         if not caller.allows(Scope.SESSIONS_WRITE):
             raise NotAuthorized(f"capture control requires {Scope.SESSIONS_WRITE.value}")

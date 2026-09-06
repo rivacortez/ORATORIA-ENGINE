@@ -84,6 +84,14 @@ class StreamingState:
     prosody: list[ProsodyReading] = field(default_factory=list)
     quality: QualityReport = field(default_factory=QualityReport)
     in_flight: int = 0
+    #: The end of the most recently *accepted* audio window - position plus
+    #: duration, in session-clock milliseconds; 0 before the first one. Set
+    #: once a window clears backpressure and is not a duplicate, regardless of
+    #: whether the runtime that decoded it succeeds: `session.completed` states
+    #: this so a caller can tell how far the run *ingested*, which is a
+    #: different question from how far the transcript has *finalized* - a
+    #: session whose speech modality degraded still captured audio.
+    captured_audio_ms: int = 0
     #: Set once a modality has failed, so the degradation notice is published
     #: on the first failure rather than on every subsequent window.
     degraded_modalities: set[Modality] = field(default_factory=set)
@@ -138,6 +146,7 @@ class StreamingCoordinator:
 
     async def ingest_audio(self, sequence: int, window: AudioWindow) -> ChunkVerdict:
         """Process one audio window, or say why it was not processed."""
+        await self._admit(sequence)
         verdict = self._state.audio_chunks.offer(sequence)
         if verdict is ChunkVerdict.DUPLICATE:
             # §7.4: redelivery is idempotent. Counting it would double every
@@ -145,7 +154,9 @@ class StreamingCoordinator:
             self._telemetry.counter("chunks.duplicate", modality="audio")
             return verdict
 
-        await self._admit()
+        self._state.captured_audio_ms = max(
+            self._state.captured_audio_ms, window.session_position_ms + window.duration_ms
+        )
         self._state.in_flight += 1
         try:
             result = await self._speech.transcribe(window)
@@ -268,12 +279,12 @@ class StreamingCoordinator:
 
     async def ingest_video(self, sequence: int, frames: Sequence[VisualFrame]) -> ChunkVerdict:
         """Process a batch of frames. A failure here never fails the session."""
+        await self._admit(sequence)
         verdict = self._state.video_chunks.offer(sequence)
         if verdict is ChunkVerdict.DUPLICATE:
             self._telemetry.counter("chunks.duplicate", modality="video")
             return verdict
 
-        await self._admit()
         self._state.in_flight += 1
         try:
             result = await self._vision.observe(frames)
@@ -297,11 +308,30 @@ class StreamingCoordinator:
 
     # -- shared -----------------------------------------------------------
 
-    async def _admit(self) -> None:
-        """Refuse work once the bounded queue is full (FR-010)."""
+    async def _admit(self, sequence: int) -> None:
+        """Refuse work once the bounded queue is full (FR-010), before the chunk is seen.
+
+        Checked *before* ``offer(sequence)`` runs. The original order called
+        ``offer()`` first: a refused chunk was still recorded as accepted, so a
+        caller that resent the exact same ``chunk_seq`` - the only sane thing
+        to retry - had it come back ``DUPLICATE`` and silently dropped. A
+        client watching the wire saw an explicit backpressure signal and no
+        error, and the audio was gone anyway. Checking admission first means a
+        refused sequence is never marked seen, so the ledger meets a resend of
+        it for the first time.
+
+        The cost is symmetric with a genuine duplicate: if the queue happens to
+        be full when an already-processed chunk is redelivered, this now asks
+        for it to be resent rather than reporting it a harmless duplicate
+        straight away. That costs one extra round trip and loses nothing,
+        which is the trade §7.4's idempotence rule and FR-010's no-loss rule
+        both accept.
+        """
         if self._state.in_flight < self._max_queue_depth:
             return
-        await self._channel.request_backpressure(self._state.session_id, self._state.in_flight)
+        await self._channel.request_backpressure(
+            self._state.session_id, self._state.in_flight, sequence
+        )
         self._telemetry.counter("backpressure.requested")
         raise BackpressureRequired(
             f"{self._state.in_flight} windows already in flight; slow down",

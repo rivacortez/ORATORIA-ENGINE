@@ -90,8 +90,10 @@ def a_recording(path: Path, seconds: int = 3) -> Path:
 def test_the_public_exports_are_exactly_these() -> None:
     """Adding a name here is a decision, not a side effect of an import."""
     assert set(evidence_engine.__all__) == {
-        # The facade and what configures it
+        # The facade, its remote twin (ADR-011's deferred client), and what
+        # configures them
         "OratoriaEngine",
+        "OratoriaClient",
         "EngineConfiguration",
         "SessionConfiguration",
         "HardwareReport",
@@ -120,6 +122,7 @@ def test_the_public_exports_are_exactly_these() -> None:
         "AudioNotUsable",
         "EngineNotWarmed",
         "LocalInferenceUnavailable",
+        "RemoteEngineUnavailable",
         "StreamAlreadyClosed",
         # Constants and version
         "DEFAULT_SAMPLE_RATE_HZ",
@@ -144,6 +147,12 @@ def test_the_public_exports_are_exactly_these() -> None:
         "Settings",
         "build_container",
         "create_app",
+        # OratoriaClient's own internals: the session it returns and the
+        # transport seam it is built on. Both are reachable at their full
+        # path (`evidence_engine.sdk.client.RemoteStreamSession`) for anyone
+        # implementing a custom `Transport`; neither is part of the promise.
+        "RemoteStreamSession",
+        "Transport",
     ],
 )
 def test_no_internal_is_reachable_from_the_package_root(name: str) -> None:
@@ -340,6 +349,10 @@ async def test_a_stream_pauses_resumes_and_finishes() -> None:
         result = await stream.finish()
 
     assert result.evidence.transcript.raw_text.startswith("buenos")
+    # S2: the embedded engine reports the same two progress fields the hosted
+    # service's `session.completed` carries - two 1 s windows were sent.
+    assert result.captured_ms == 2_000
+    assert result.finalized_through_ms is not None
 
 
 async def test_a_finished_stream_refuses_to_be_reused() -> None:

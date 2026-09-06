@@ -193,6 +193,10 @@ async def _run(
             "configuration_id": configuration.id.value,
             "taxonomy_version": str(configuration.taxonomy_version),
             "max_queue_depth": engine.profile.max_queue_depth,
+            # Which physical instance accepted this session. A pilot running the
+            # engine on more than one GPU workstation needs this to attribute a
+            # result to the machine that produced it, not only to the run id.
+            "instance_id": engine.profile.instance_id,
         },
     )
 
@@ -362,8 +366,39 @@ async def _control(
                 # Restated at the close of every session (§17): the consumer
                 # never has to infer that no ranking is coming.
                 "ranking_authority": completed.document.ranking_authority,
+                # How far the run got, in two different senses that a client
+                # needs told apart. `finalized_through_ms` is read off the
+                # *completed* document - after `finalize_remaining` settled
+                # whatever was still provisional - so it agrees with what
+                # `GET /result` renders rather than with a coordinator state
+                # that `finalize_remaining` never wrote back into.
+                "finalized_through_ms": completed.document.transcript.finalized_time_frontier.ms,
+                # The end of the last audio window this run *ingested*,
+                # regardless of whether the speech modality degraded on it.
+                # A session whose recogniser failed on every window still
+                # captured audio, and a client needs to know that separately
+                # from how much got transcribed.
+                "captured_ms": coordinator.state.captured_audio_ms,
             },
         )
+        return False
+
+    if message.type is ClientMessageType.SESSION_ABORT:
+        # Order matters: the run is closed unsuccessful first, so a reader of
+        # the run repository never observes a session already marked `failed`
+        # while its most recent run still claims to be `running`.
+        await engine.close_run.execute(coordinator.state.run_id, succeeded=False)
+        await engine.capture_control.abort(caller, session_id)
+        await channel.send_aborted(
+            session_id,
+            {
+                "run_id": coordinator.state.run_id.value,
+                "captured_ms": coordinator.state.captured_audio_ms,
+            },
+        )
+        # The socket closes right after `_control` returns False, with the
+        # default 1000 (normal closure): an abort is a client decision, not a
+        # protocol violation, and nothing about closing it is exceptional.
         return False
 
     # `session.configure` is accepted and acknowledged by silence: capabilities

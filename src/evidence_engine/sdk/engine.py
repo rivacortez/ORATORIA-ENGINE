@@ -155,6 +155,18 @@ class AnalysisResult:
     #: How many times the engine asked the caller to slow down. Zero on
     #: `analyze_file`, which paces itself; meaningful on a live stream.
     backpressure_signals: int = 0
+    #: How far the transcript is finalized, read off the completed document -
+    #: after the last provisional tail was settled - so it agrees with what
+    #: `GET /v1/sessions/{id}/result` renders. `None` only for a result built
+    #: by something that never completed a streaming session at all.
+    finalized_through_ms: int | None = None
+    #: The end of the last audio window this run *ingested*, independent of
+    #: whether the speech modality degraded on it. A caller comparing this
+    #: against `finalized_through_ms` can tell "the run heard everything and
+    #: finished processing it" from "the run heard more than it finished
+    #: transcribing" - two different situations that `finalized_through_ms`
+    #: alone cannot distinguish.
+    captured_ms: int | None = None
 
     @property
     def transcript(self) -> Transcript:
@@ -444,6 +456,8 @@ class OratoriaEngine:
         return AnalysisResult(
             evidence=evidence_from(completed.document),
             backpressure_signals=channel.backpressure_signals,
+            finalized_through_ms=completed.document.transcript.finalized_time_frontier.ms,
+            captured_ms=coordinator.state.captured_audio_ms,
         )
 
     async def _abort(self, coordinator: StreamingCoordinator) -> None:

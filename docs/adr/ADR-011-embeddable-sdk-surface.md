@@ -138,11 +138,57 @@ cannot or should not take those on.
 
 **Deliberately deferred.** A TypeScript SDK for browser capture and remote
 consumption will be a separate npm distribution, living in this repository
-under `sdk/typescript/`. A remote client (`OratoriaClient`) that speaks to the
-hosted service and returns the same contracts is not built; when it is, the
-conformance comparison above is the test it has to pass.
+under `sdk/typescript/`. ~~A remote client (`OratoriaClient`) that speaks to
+the hosted service and returns the same contracts is not built; when it is,
+the conformance comparison above is the test it has to pass.~~ **Built - see
+the amendment below.**
 
 **Unchanged.** The scientific contribution is still the contextual and
 multimodal model, and this SDK does not create a detector or improve accuracy.
 It is the mechanism by which that model, once it exists, is integrated and
 reused.
+
+## Amendment (2026-09-06) — `OratoriaClient` exists
+
+The remote client this ADR deferred is built: `evidence_engine.sdk.client
+.OratoriaClient`, exported from the package root, satisfying the same two
+structural protocols as the embedded facade - `warmup`, `create_stream`,
+`aclose`, `contributions` on the engine side; `send_audio`, `receive`,
+`pending`, `finish`, `abort` on the session side. The pilot condition that
+motivated it: the engine runs as a private service on a GPU workstation,
+OratorIA's backend runs on CPU infrastructure and reaches it over HTTP and
+WebSocket, and the adapter OratorIA already wrote against the embedded engine
+drives this one unchanged.
+
+**The conformance test named above is now a real test.**
+`tests/contract/test_remote_client.py::test_evidence_from_json_matches_the_
+embedded_translation` streams one scripted session through the hosted app
+and through the embedded engine and asserts `sdk.results.evidence_from_json`
+and `sdk.results.evidence_from` agree field for field, excluding the
+identifiers and stamps that differ by construction. It passes.
+
+**What closing this gap needed on the server side**, recorded in full in
+`docs/BUILD_RECORD.md` §3.21 and its own sub-decisions:
+
+- Backpressure that does not lose a chunk: the admission check in
+  `StreamingCoordinator._admit` now runs *before* the chunk is marked seen,
+  and `backpressure.requested` names the refused `chunk_seq` so a client
+  knows exactly what to resend.
+- `session.completed` states `finalized_through_ms` and `captured_ms`, so a
+  client can tell how far a run got without holding the socket open for the
+  whole session.
+- A client-initiated `session.abort`, answered with `session.aborted`,
+  distinct from a dropped connection.
+- A startup warm-up decode and a `checks["speech:warm"]` readiness gate, plus
+  an `instance_id` on `session.accepted` and an `instance`/`models` block on
+  `/v1/capabilities` - a pilot can run more than one GPU workstation behind
+  the same consuming application and needs to tell them apart.
+
+**What is still not built.** No positive per-chunk acknowledgement exists on
+the wire, so a refusal for the very last chunk of a session can still arrive
+after the client has moved on to `finish()` and be missed - a residual risk
+named in `sdk/client.py`'s module docstring and in BUILD_RECORD §3.21, not
+one this amendment claims to have closed. `Evidence` carries no
+`cooccurrences` and no `quality`; the wire renders both and neither is
+translated, because inventing a public shape for two fields nothing here
+reads was not what this change was asked to do.

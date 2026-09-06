@@ -43,6 +43,20 @@ class StreamAlreadyClosed(OratoriaError):
     """A finished or aborted session was used again."""
 
 
+class RemoteEngineUnavailable(OratoriaError):
+    """``OratoriaClient`` could not confirm the hosted engine is ready.
+
+    Raised by ``warmup()``, which is the only thing that checks this over the
+    network - the client-side twin of ``LocalInferenceUnavailable``. Carries
+    the URL and the failing check rather than a bare status code, because a
+    consumer debugging a pilot deployment needs to know *which* of
+    ``/health/ready`` and ``/v1/capabilities`` refused and what it said, not
+    only that something did. Also raised by a live session when the server
+    returns an error status this client did not expect - it never falls back
+    to a local computation instead.
+    """
+
+
 class EngineNotWarmed(OratoriaError):
     """Analysis was attempted before the model was loaded.
 

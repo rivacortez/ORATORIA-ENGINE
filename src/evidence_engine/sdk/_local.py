@@ -70,14 +70,16 @@ class CollectedEvents:
     async def publish(self, event: OutboundEvent) -> None:
         await self._events.put(event)
 
-    async def request_backpressure(self, session_id: SessionId, queue_depth: int) -> None:
+    async def request_backpressure(
+        self, session_id: SessionId, queue_depth: int, chunk_seq: int
+    ) -> None:
         self._backpressure += 1
         await self._events.put(
             OutboundEvent(
                 type=ServerMessageType.BACKPRESSURE_REQUESTED,
                 session_id=session_id,
                 monotonic_time_ms=0,
-                payload={"queue_depth": queue_depth},
+                payload={"queue_depth": queue_depth, "chunk_seq": chunk_seq},
             )
         )
 
