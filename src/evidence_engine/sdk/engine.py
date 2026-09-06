@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import wave
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -93,10 +94,11 @@ from evidence_engine.domain.sessions.state import SessionMode
 from evidence_engine.domain.shared.identifiers import (
     ApiKeyId,
     ApplicationId,
+    ModelVersionId,
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import SemanticVersion
+from evidence_engine.domain.shared.provenance import ModelRole, SemanticVersion
 from evidence_engine.sdk._local import CollectedEvents, SilentTelemetry
 from evidence_engine.sdk.configuration import EngineConfiguration, SessionConfiguration
 from evidence_engine.sdk.errors import (
@@ -478,6 +480,23 @@ class OratoriaEngine:
                 "can say the model runs on this machine. `hardware_preflight()` reports "
                 "what the hardware has and deliberately does not answer that."
             )
+
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]:
+        """Models by role this engine attributes evidence to.
+
+        The same mapping the hosted `/v1/capabilities` publishes and that
+        `OratoriaClient.contributions` learns at `warmup()` - the consumer that
+        drives both (OratorIA's adapter) records it as the provenance of every
+        session. Complete once `warmup()` has loaded the speech runtime; before
+        that only the vision side is known, and a consumer reading it early
+        sees exactly the partial picture the run manifest would.
+        """
+        merged: dict[ModelRole, ModelVersionId] = {}
+        if self._speech is not None:
+            merged.update(self._speech.contributions)
+        merged.update(self._vision.contributions)
+        return merged
 
     @property
     def configuration(self) -> ConfigurationSnapshot:

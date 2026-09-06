@@ -87,6 +87,23 @@ def a_recording(path: Path, seconds: int = 3) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def test_the_engine_and_the_client_share_the_surface_oratoria_drives() -> None:
+    """OratorIA's adapter drives both through one structural protocol: an
+    engine with `warmup`/`create_stream`/`aclose`/`contributions`, a session
+    with `send_audio`/`receive`/`pending`/`finish`/`abort`. A member present
+    on one and missing on the other is a session that dies on the path
+    nobody tested against the real class - `contributions` was exactly that
+    on the embedded engine until this test existed."""
+    from evidence_engine.sdk.client import OratoriaClient, RemoteStreamSession
+
+    for member in ("warmup", "create_stream", "aclose", "contributions"):
+        assert hasattr(OratoriaEngine, member), f"OratoriaEngine lacks {member}"
+        assert hasattr(OratoriaClient, member), f"OratoriaClient lacks {member}"
+    for member in ("send_audio", "receive", "pending", "finish", "abort"):
+        assert hasattr(StreamSession, member), f"StreamSession lacks {member}"
+        assert hasattr(RemoteStreamSession, member), f"RemoteStreamSession lacks {member}"
+
+
 def test_the_public_exports_are_exactly_these() -> None:
     """Adding a name here is a decision, not a side effect of an import."""
     assert set(evidence_engine.__all__) == {
