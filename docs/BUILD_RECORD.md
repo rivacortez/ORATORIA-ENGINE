@@ -635,6 +635,23 @@ definition site and not only in this record.
    every later test in the same process with nothing here to say so. It now
    asserts `not thread.is_alive()`.
 
+**Amendment - `receive()` threw a concurrent consumer out mid-session.** Found
+live, the first time OratorIA drove a real session through this client rather
+than through the embedded engine: the session closed *incomplete*, with the
+last 2.4 s transcribed on the server and discarded by the client. OratorIA's
+adapter runs a receiver task beside the feeder that calls `finish()`. Against
+the hosted engine the final window's `transcript.final` and then
+`session.completed` arrive *after* `finish()` has marked the stream closed;
+the receiver's next `receive()` hit `_require_open` and raised
+`StreamAlreadyClosed`, which the adapter - correctly - treated as the session
+failing. The embedded path never showed it, only because `OratoriaEngine.
+_finish` publishes nothing through the channel that a receiver could wake for.
+The two sessions now say the same thing: `receive()` answers until nothing
+more can arrive - the stream settled (`finish()` returned or `abort()` ran;
+for the remote session, the reader task ended) and the queue is empty - and
+only then raises. `tests/contract/test_receive_outlives_finish.py` holds both
+paths to it, and was proved red against the previous `receive()` on each.
+
 ---
 
 ## 4. Mistakes, and what they cost

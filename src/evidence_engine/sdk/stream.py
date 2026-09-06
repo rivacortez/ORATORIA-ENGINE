@@ -38,6 +38,10 @@ class StreamSession:
         self._configuration = configuration
         self._opened = False
         self._closed = False
+        #: Nothing more will ever be published on this stream: `finish()`
+        #: returned (or failed) or `abort()` ran. Distinct from `_closed`,
+        #: which flips the moment `finish()` STARTS and only governs sending.
+        self._settled = False
         self._position_ms = 0
         self._sequence = 0
 
@@ -125,9 +129,20 @@ class StreamSession:
     # -- receiving --------------------------------------------------------
 
     async def receive(self) -> OutboundEvent:
-        """The next server-to-client message (§7.3), waiting if none is queued."""
+        """The next server-to-client message (§7.3), waiting if none is queued.
+
+        Keeps answering after ``finish()`` has started. Finishing can publish
+        the last window's events through this same channel, and a consumer
+        that reads concurrently with the caller that finishes (OratorIA's
+        adapter runs a receiver task beside its feeder) has to be able to drain
+        them rather than be thrown out of a session that is still speaking to
+        it. It raises only once nothing more can arrive: the stream settled
+        (``finish()`` returned or ``abort()`` ran) and the queue is empty.
+        ``RemoteStreamSession.receive`` keeps the same words.
+        """
         await self._open()
-        self._require_open()
+        if self._settled and self._channel.pending() == 0:
+            self._raise_closed()
         return await self._channel.next_event()
 
     def pending(self) -> int:
@@ -157,9 +172,12 @@ class StreamSession:
         await self._open()
         self._require_open()
         self._closed = True
-        return await self._engine._finish(
-            self._caller, self._session_id, self._coordinator, self._channel
-        )
+        try:
+            return await self._engine._finish(
+                self._caller, self._session_id, self._coordinator, self._channel
+            )
+        finally:
+            self._settled = True
 
     async def abort(self) -> None:
         """Abandon the session without producing a result.
@@ -174,19 +192,27 @@ class StreamSession:
         """
         if self._closed or not self._opened:
             self._closed = True
+            self._settled = True
             return
         self._closed = True
-        await self._engine._abort(self._coordinator)
+        try:
+            await self._engine._abort(self._coordinator)
+        finally:
+            self._settled = True
 
     # -- internals --------------------------------------------------------
 
     def _require_open(self) -> None:
         if self._closed:
-            raise StreamAlreadyClosed(
-                "this stream has been finished or aborted. A session is not "
-                "reusable: §6.1 step 9 makes finalized history immutable, so a "
-                "second pass would either rewrite it or silently start a new one."
-            )
+            self._raise_closed()
+
+    @staticmethod
+    def _raise_closed() -> None:
+        raise StreamAlreadyClosed(
+            "this stream has been finished or aborted. A session is not "
+            "reusable: §6.1 step 9 makes finalized history immutable, so a "
+            "second pass would either rewrite it or silently start a new one."
+        )
 
     def _engine_rate(self) -> int:
         return self._engine._configuration.sample_rate_hz

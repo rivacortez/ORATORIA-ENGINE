@@ -184,6 +184,13 @@ identifiers and stamps that differ by construction. It passes.
   an `instance_id` on `session.accepted` and an `instance`/`models` block on
   `/v1/capabilities` - a pilot can run more than one GPU workstation behind
   the same consuming application and needs to tell them apart.
+- One more word of the session contract, fixed after the first live session
+  through the client: `receive()` keeps answering while `finish()` is in
+  flight and raises `StreamAlreadyClosed` only once nothing more can arrive
+  (the stream settled and the queue is empty). The hosted engine publishes
+  the final window's events and `session.completed` after `finish()` has
+  closed the stream for sending, and a consumer draining them concurrently
+  must not be thrown out. Both sessions hold to it (BUILD_RECORD §3.21).
 
 **What is still not built.** No positive per-chunk acknowledgement exists on
 the wire, so a refusal for the very last chunk of a session can still arrive

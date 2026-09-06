@@ -572,10 +572,29 @@ class RemoteStreamSession:
     # -- receiving ------------------------------------------------------------
 
     async def receive(self) -> OutboundEvent:
-        """The next server-to-client message, waiting if none is queued yet."""
+        """The next server-to-client message, waiting if none is queued yet.
+
+        Keeps answering after ``finish()`` has closed the stream for sending.
+        The server publishes the final window's events and then
+        ``session.completed`` while ``finish()`` is in flight, and a consumer
+        draining them concurrently (OratorIA's adapter runs a receiver task
+        beside its feeder) must not be thrown out of a session the server is
+        still speaking to - found live, with the last window transcribed on the
+        server and discarded here. It raises only once nothing more can
+        arrive: the reader task has ended (completion, abort, or a dead
+        socket) and every queued event has been handed over. Same words as
+        the embedded ``StreamSession.receive``.
+        """
         await self._open()
-        self._require_open()
-        return await self._state.events.get()
+        state = self._state
+        reader = state.reader_task
+        if reader is not None and reader.done() and state.events.empty():
+            self._require_open()  # raises when closed ...
+            raise StreamAlreadyClosed(  # ... and when the socket died first
+                "nothing more can arrive on this stream: the connection to the engine "
+                "has ended and every queued event has already been handed over."
+            )
+        return await state.events.get()
 
     def pending(self) -> int:
         """How many events are queued right now, without waiting."""
