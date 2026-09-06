@@ -812,9 +812,18 @@ event clock is the latest end among the placed words rather than the lexically
 last one's, and a result filed under a window position that was never handed
 out is refused rather than left to lose its unplaced words.
 
+_And the close never froze the tail._ The same review noticed that
+`Transcript.finalize_remaining` - "a word still provisional when the session
+ends is not going to be revised" - had no caller. Session completion passed
+the transcript through as it stood, so a word still provisional at the end
+reached the document as provisional, which a consumer is entitled to keep
+re-rendering as revisable. It is called at completion now, and a session that
+ends mid-window publishes its tail as final text.
+
 **Cost.** Nothing yet: found by reading the publisher before a real session
-ran through it, the third copy by the regression for the first two, and the
-overshoot by a fresh review of the fix.
+ran through it, the third copy by the regression for the first two, the
+overshoot by a fresh review of the fix, and the missing call by the review of
+the fix's fix.
 **Rule.** The one §4.14 already states, applied again, with "every layer" now
 including the live path driven by a runtime shaped like the real one - one
 window, its own words, stable through its end. The frontier is stated from

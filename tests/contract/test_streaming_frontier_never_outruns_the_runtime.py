@@ -165,3 +165,21 @@ async def test_a_result_filed_under_the_wrong_window_is_refused() -> None:
 
     with pytest.raises(MisdeclaredAudioWindow, match="reported window position 1 ms"):
         await stream.send_audio(ONE_SECOND)
+
+
+async def test_the_provisional_tail_is_settled_at_session_close() -> None:
+    """No more audio, no more passes: what is still provisional is final text.
+
+    `Transcript.finalize_remaining` said exactly this in its docstring and had
+    no caller; a word still provisional when the session ended reached the
+    document as provisional, which a consumer is entitled to keep re-rendering
+    as revisable. The runtime here never declares anything stable, which is
+    the shape of a session that ends mid-window.
+    """
+    stream = await _stream({0: _result(0, (_word("hola", 0, 300, 0),), stable=0)})
+    assert await stream.send_audio(ONE_SECOND, is_final=True)
+
+    result = await stream.finish()
+
+    assert result.transcript.raw_text == "hola"
+    assert [word.status for word in result.transcript.words] == ["final"]

@@ -129,11 +129,18 @@ class CompleteSession:
 
         cooccurrences = fuse(speech_events, visual_events, configuration.fusion_window)
 
+        # No more audio and no more passes: whatever is still provisional is
+        # final text. `finalize_remaining` said so in its docstring and had no
+        # caller, so a session that ended mid-window published its tail as
+        # revisable - which a consumer is entitled to keep re-rendering as
+        # such. The events above get the same treatment two statements up.
+        transcript = state.transcript.finalize_remaining()
+
         bundle = EvidenceBundle(
             run_id=state.run_id,
             session_id=session_id,
             tenant=caller.tenant,
-            transcript=state.transcript,
+            transcript=transcript,
             quality=quality,
             speech_events=speech_events,
             visual_events=visual_events,
@@ -149,9 +156,7 @@ class CompleteSession:
                 schema_version=configuration.schema_version,
                 taxonomy_version=configuration.taxonomy_version,
                 configuration=configuration.id,
-                models=_models_used(
-                    state.transcript, speech_events, visual_events, tuple(state.prosody)
-                ),
+                models=_models_used(transcript, speech_events, visual_events, tuple(state.prosody)),
             ),
             transcript=bundle.transcript,
             quality=bundle.quality,
