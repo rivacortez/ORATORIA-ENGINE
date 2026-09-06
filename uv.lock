@@ -2202,6 +2202,10 @@ version = "0.1.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
+client = [
+    { name = "httpx" },
+    { name = "websockets" },
+]
 dev = [
     { name = "httpx" },
     { name = "httpx2" },
@@ -2247,6 +2251,7 @@ requires-dist = [
     { name = "alembic", marker = "extra == 'server'", specifier = ">=1.14" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.30" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'client'", specifier = ">=0.28" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.12" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
@@ -2271,8 +2276,9 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'local'", specifier = "==4.57.6" },
     { name = "types-aioboto3", marker = "extra == 'dev'", specifier = ">=13.2" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.32" },
+    { name = "websockets", marker = "extra == 'client'", specifier = ">=13" },
 ]
-provides-extras = ["server", "local", "research", "record", "dev"]
+provides-extras = ["server", "local", "client", "research", "record", "dev"]
 
 [[package]]
 name = "packaging"
