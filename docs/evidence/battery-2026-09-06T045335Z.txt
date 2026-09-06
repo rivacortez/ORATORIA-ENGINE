@@ -1,0 +1,360 @@
+OratorIA Multimodal Evidence Engine - battery evidence
+Captured (UTC): 2026-09-06T04:53:35Z
+Commit:         a8f3d92d24e7a387fd37b50a142f3de804f928c1
+Branch:         fix/phase-0-5-annotator-ready
+Tree state:     0 uncommitted file(s) outside docs/evidence
+Python:         Python 3.12.10
+Database:       postgresql+asyncpg://... (credentials redacted)
+
+=== infrastructure ===
+minio	minio/minio:latest	Up 11 seconds (healthy)
+postgres	postgres:16-alpine	Up 11 seconds (healthy)
+redis	redis:7-alpine	Up 11 seconds (healthy)
+
+=== ruff check ===
+All checks passed!
+
+=== ruff format --check ===
+195 files already formatted
+
+=== mypy --strict ===
+Success: no issues found in 135 source files
+
+=== import-linter ===
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+---------
+Contracts
+---------
+
+Analyzed 169 files, 853 dependencies.
+-------------------------------------
+
+C1 - Bootstrap -> SDK -> Adapters -> Application -> Domain KEPT
+C2 - The domain imports no framework KEPT
+C3 - The application layer talks to ports, not to infrastructure KEPT
+C4 - The shared kernel knows no other domain package KEPT
+C5 - Observation packages are independent of each other KEPT
+C6 - Inbound adapters do not import outbound adapters KEPT
+C7 - Corpus tooling imports the shared kernel, never the rest of the engine KEPT
+C8 - The service does not import the corpus tooling KEPT
+
+Contracts: 8 kept, 0 broken.
+
+=== alembic: upgrade -> downgrade -> upgrade ===
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_schema, Initial schema.
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial_schema -> 0002_provenance_seed, Give the reproducibility seed a column.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0002_provenance_seed -> 0001_initial_schema, Give the reproducibility seed a column.
+INFO  [alembic.runtime.migration] Running downgrade 0001_initial_schema -> , Initial schema.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_schema, Initial schema.
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial_schema -> 0002_provenance_seed, Give the reproducibility seed a column.
+round-trip completed
+
+=== pytest: full battery, warnings as errors ===
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\rcort\Documents\Claude\TESIS_ORATORIA\ORATORIA-ENGINE
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.0, asyncio-1.4.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1286 items
+
+tests\contract\test_access_and_isolation.py .....................        [  1%]
+tests\contract\test_bootstrap_key_and_cli.py ...............             [  2%]
+tests\contract\test_capabilities_describe_the_runtime.py ......          [  3%]
+tests\contract\test_degradation_and_reproducibility.py ...........       [  4%]
+tests\contract\test_deletion_verification.py ........                    [  4%]
+tests\contract\test_key_provisioning.py ................                 [  5%]
+tests\contract\test_phase2_exit_criterion.py ...                         [  6%]
+tests\contract\test_provenance_by_role.py .........                      [  6%]
+tests\contract\test_published_payload_carries_no_ranking.py ............ [  7%]
+.......                                                                  [  8%]
+tests\contract\test_readiness_requires_a_recogniser.py ..                [  8%]
+tests\contract\test_sdk_surface.py ..................................... [ 11%]
+.                                                                        [ 11%]
+tests\contract\test_streaming_frontier_never_outruns_the_runtime.py .... [ 11%]
+                                                                         [ 11%]
+tests\contract\test_streaming_publishes_unplaced_words.py ..             [ 11%]
+tests\corpus\test_agreement_report.py ............                       [ 12%]
+tests\corpus\test_cli.py ............                                    [ 13%]
+tests\corpus\test_cli_partition.py ............                          [ 14%]
+tests\corpus\test_consent_and_conditions.py ............................ [ 16%]
+....                                                                     [ 17%]
+tests\corpus\test_disagreements.py ................                      [ 18%]
+tests\corpus\test_elan_refusals.py ..........................            [ 20%]
+tests\corpus\test_matching.py ................                           [ 21%]
+tests\corpus\test_matching_invariants.py ............................... [ 24%]
+........................................................................ [ 29%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+........................................................................ [ 46%]
+........................................................................ [ 52%]
+........................................................................ [ 57%]
+..........................................................               [ 62%]
+tests\corpus\test_measures.py ......................                     [ 63%]
+tests\corpus\test_partition.py ......................................... [ 67%]
+..........................                                               [ 69%]
+tests\corpus\test_refusals.py .....................................      [ 72%]
+tests\corpus\test_schema_and_elan.py ...............................     [ 74%]
+tests\corpus\test_scope.py ............................................. [ 77%]
+                                                                         [ 77%]
+tests\distribution\test_c9_core_installs_alone.py ............           [ 78%]
+tests\integration\test_phase2_on_postgres.py ..                          [ 79%]
+tests\integration\test_postgres_adapters.py ..............               [ 80%]
+tests\integration\test_token_row_constraints.py ...                      [ 80%]
+tests\invariants\test_no_causal_or_ranking_claims.py .................   [ 81%]
+tests\invariants\test_no_fabricated_values.py .........                  [ 82%]
+tests\invariants\test_observable_only.py ...............                 [ 83%]
+tests\invariants\test_reports_never_substitute_zero.py .....             [ 83%]
+tests\invariants\test_session_clock_survives_pauses.py .....             [ 84%]
+tests\invariants\test_unaligned_words_survive.py ..............          [ 85%]
+tests\invariants\test_verbatim_fidelity.py ...............               [ 86%]
+tests\unit\test_audio_window_shape.py .......................            [ 88%]
+tests\unit\test_calibration.py ................                          [ 89%]
+tests\unit\test_chunk_sequencing.py .........                            [ 90%]
+tests\unit\test_evidence_ledger.py ..................                    [ 91%]
+tests\unit\test_initial_migration_is_current.py ......                   [ 92%]
+tests\unit\test_provenance_seed.py ................................      [ 94%]
+tests\unit\test_runtime_modes_name_the_baseline.py ......                [ 95%]
+tests\unit\test_session_lifecycle.py ....................                [ 96%]
+tests\unit\test_taxonomy_doc_is_current.py ...                           [ 96%]
+tests\unit\test_visual_calibration.py ......................             [ 98%]
+tests\unit\test_whisper_runtime.py .............                         [ 99%]
+tests\unit\test_whisper_words_stay_inside_their_window.py ....           [100%]
+
+============================ 1286 passed in 33.49s ============================
+
+=== C9: the core installs and imports alone ===
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\rcort\Documents\Claude\TESIS_ORATORIA\ORATORIA-ENGINE
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.0, asyncio-1.4.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1286 items / 1274 deselected / 12 selected
+
+tests\distribution\test_c9_core_installs_alone.py ............           [100%]
+
+==================== 12 passed, 1274 deselected in 16.66s =====================
+
+=== pytest: integration only ===
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\rcort\Documents\Claude\TESIS_ORATORIA\ORATORIA-ENGINE
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.0, asyncio-1.4.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1286 items / 1267 deselected / 19 selected
+
+tests\integration\test_phase2_on_postgres.py ..                          [ 10%]
+tests\integration\test_postgres_adapters.py ..............               [ 84%]
+tests\integration\test_token_row_constraints.py ...                      [100%]
+
+==================== 19 passed, 1267 deselected in 10.72s =====================
+
+=== coverage: domain + application + corpus (NFR-021 floor is 80) ===
+........................................................................ [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 16%]
+........................................................................ [ 22%]
+........................................................................ [ 27%]
+........................................................................ [ 33%]
+........................................................................ [ 39%]
+........................................................................ [ 44%]
+........................................................................ [ 50%]
+........................................................................ [ 55%]
+........................................................................ [ 61%]
+........................................................................ [ 67%]
+........................................................................ [ 72%]
+........................................................................ [ 78%]
+........................................................................ [ 83%]
+........................................................................ [ 89%]
+........................................................................ [ 95%]
+..............................................................           [100%]
+=============================== tests coverage ================================
+______________ coverage: platform win32, python 3.12.10-final-0 _______________
+
+Name                                                           Stmts   Miss Branch BrPart  Cover
+------------------------------------------------------------------------------------------------
+src\corpus\__init__.py                                             0      0      0      0   100%
+src\corpus\agreement\__init__.py                                   0      0      0      0   100%
+src\corpus\agreement\matching.py                                 115      0     36      0   100%
+src\corpus\agreement\measures.py                                  94      0     22      0   100%
+src\corpus\agreement\report.py                                   170      1     42      1    99%
+src\corpus\cli\__init__.py                                         0      0      0      0   100%
+src\corpus\cli\main.py                                           243     14     56      5    94%
+src\corpus\io\__init__.py                                          0      0      0      0   100%
+src\corpus\io\elan.py                                            243     11     44      4    95%
+src\corpus\partition\__init__.py                                   0      0      0      0   100%
+src\corpus\partition\freeze.py                                   163      9     50      8    92%
+src\corpus\partition\inventory.py                                105      2     26      2    97%
+src\corpus\partition\split.py                                    164      1     54      1    99%
+src\corpus\schema\__init__.py                                      0      0      0      0   100%
+src\corpus\schema\records.py                                     174      1     64      0    99%
+src\corpus\schema\validation.py                                   86      0     28      0   100%
+src\evidence_engine\application\__init__.py                        0      0      0      0   100%
+src\evidence_engine\application\api.py                            44      0      0      0   100%
+src\evidence_engine\application\commands\__init__.py               0      0      0      0   100%
+src\evidence_engine\application\commands\administer_keys.py       66      7     22      6    85%
+src\evidence_engine\application\commands\capture_control.py       38      2      4      2    90%
+src\evidence_engine\application\commands\complete_session.py      85      3     18      3    94%
+src\evidence_engine\application\commands\create_session.py        73      4     16      2    91%
+src\evidence_engine\application\commands\delete_evidence.py       62      0     10      0   100%
+src\evidence_engine\application\commands\open_run.py              34      3      6      3    85%
+src\evidence_engine\application\errors.py                         15      2      0      0    87%
+src\evidence_engine\application\ports\__init__.py                  0      0      0      0   100%
+src\evidence_engine\application\ports\clock.py                     7      2      0      0    71%
+src\evidence_engine\application\ports\platform.py                117     12     20     10    84%
+src\evidence_engine\application\ports\repositories.py             79      8     16      8    83%
+src\evidence_engine\application\ports\runtimes.py                138      6     20      5    93%
+src\evidence_engine\application\ports\storage.py                  38      7      2      1    80%
+src\evidence_engine\application\ports\streaming.py                51      2     10      5    89%
+src\evidence_engine\application\ports\tokens.py                   19      2      0      0    89%
+src\evidence_engine\application\queries\__init__.py                0      0      0      0   100%
+src\evidence_engine\application\queries\read_session.py           80      4     16      4    92%
+src\evidence_engine\application\services\__init__.py               0      0      0      0   100%
+src\evidence_engine\application\services\calibration.py           43      0     16      0   100%
+src\evidence_engine\application\services\event_identity.py        14      0      0      0   100%
+src\evidence_engine\application\services\fusion.py                15      0      2      0   100%
+src\evidence_engine\application\services\speech_assembly.py       65      0     12      0   100%
+src\evidence_engine\application\services\visual_assembly.py       70      9     16      5    81%
+src\evidence_engine\application\workflows\__init__.py              0      0      0      0   100%
+src\evidence_engine\application\workflows\streaming.py           192     11     50      7    93%
+src\evidence_engine\domain\__init__.py                             0      0      0      0   100%
+src\evidence_engine\domain\evidence\__init__.py                    0      0      0      0   100%
+src\evidence_engine\domain\evidence\cooccurrence.py               45      2     12      2    93%
+src\evidence_engine\domain\evidence\document.py                   87      9     24      1    87%
+src\evidence_engine\domain\evidence\ledger.py                     65      0     12      0   100%
+src\evidence_engine\domain\quality\__init__.py                     0      0      0      0   100%
+src\evidence_engine\domain\quality\assessment.py                  77      6     14      4    89%
+src\evidence_engine\domain\sessions\__init__.py                    0      0      0      0   100%
+src\evidence_engine\domain\sessions\capabilities.py               70      7     12      3    88%
+src\evidence_engine\domain\sessions\clock.py                      30      3      8      3    84%
+src\evidence_engine\domain\sessions\consent.py                    46      3     16      3    90%
+src\evidence_engine\domain\sessions\sequencing.py                 65      2     16      1    96%
+src\evidence_engine\domain\sessions\session.py                    62      2      4      0    97%
+src\evidence_engine\domain\sessions\state.py                      27      0      2      0   100%
+src\evidence_engine\domain\shared\__init__.py                      0      0      0      0   100%
+src\evidence_engine\domain\shared\confidence.py                   25      1      2      1    93%
+src\evidence_engine\domain\shared\errors.py                        9      0      0      0   100%
+src\evidence_engine\domain\shared\identifiers.py                  38      1      2      1    95%
+src\evidence_engine\domain\shared\measurement.py                  41      0      4      0   100%
+src\evidence_engine\domain\shared\provenance.py                   79      5     12      3    91%
+src\evidence_engine\domain\shared\taxonomy.py                     83      1      2      1    98%
+src\evidence_engine\domain\shared\timeline.py                     43      8     10      3    79%
+src\evidence_engine\domain\speech_events\__init__.py               0      0      0      0   100%
+src\evidence_engine\domain\speech_events\events.py                53      2     16      1    96%
+src\evidence_engine\domain\speech_events\prosody.py               33      1      4      1    95%
+src\evidence_engine\domain\transcript\__init__.py                  0      0      0      0   100%
+src\evidence_engine\domain\transcript\tokens.py                   76      3     14      3    93%
+src\evidence_engine\domain\transcript\transcript.py               64      5     16      1    90%
+src\evidence_engine\domain\visual_events\__init__.py               0      0      0      0   100%
+src\evidence_engine\domain\visual_events\calibration.py           30      0      6      0   100%
+src\evidence_engine\domain\visual_events\events.py                56      6     14      5    81%
+------------------------------------------------------------------------------------------------
+TOTAL                                                           4106    190    900    119    94%
+
+=== coverage gate: engine (domain + application), floor 88 ===
+Name                                                           Stmts   Miss Branch BrPart  Cover
+------------------------------------------------------------------------------------------------
+src\evidence_engine\application\__init__.py                        0      0      0      0   100%
+src\evidence_engine\application\api.py                            44      0      0      0   100%
+src\evidence_engine\application\commands\__init__.py               0      0      0      0   100%
+src\evidence_engine\application\commands\administer_keys.py       66      7     22      6    85%
+src\evidence_engine\application\commands\capture_control.py       38      2      4      2    90%
+src\evidence_engine\application\commands\complete_session.py      85      3     18      3    94%
+src\evidence_engine\application\commands\create_session.py        73      4     16      2    91%
+src\evidence_engine\application\commands\delete_evidence.py       62      0     10      0   100%
+src\evidence_engine\application\commands\open_run.py              34      3      6      3    85%
+src\evidence_engine\application\errors.py                         15      2      0      0    87%
+src\evidence_engine\application\ports\__init__.py                  0      0      0      0   100%
+src\evidence_engine\application\ports\clock.py                     7      2      0      0    71%
+src\evidence_engine\application\ports\platform.py                117     12     20     10    84%
+src\evidence_engine\application\ports\repositories.py             79      8     16      8    83%
+src\evidence_engine\application\ports\runtimes.py                138      6     20      5    93%
+src\evidence_engine\application\ports\storage.py                  38      7      2      1    80%
+src\evidence_engine\application\ports\streaming.py                51      2     10      5    89%
+src\evidence_engine\application\ports\tokens.py                   19      2      0      0    89%
+src\evidence_engine\application\queries\__init__.py                0      0      0      0   100%
+src\evidence_engine\application\queries\read_session.py           80      4     16      4    92%
+src\evidence_engine\application\services\__init__.py               0      0      0      0   100%
+src\evidence_engine\application\services\calibration.py           43      0     16      0   100%
+src\evidence_engine\application\services\event_identity.py        14      0      0      0   100%
+src\evidence_engine\application\services\fusion.py                15      0      2      0   100%
+src\evidence_engine\application\services\speech_assembly.py       65      0     12      0   100%
+src\evidence_engine\application\services\visual_assembly.py       70      9     16      5    81%
+src\evidence_engine\application\workflows\__init__.py              0      0      0      0   100%
+src\evidence_engine\application\workflows\streaming.py           192     11     50      7    93%
+src\evidence_engine\domain\__init__.py                             0      0      0      0   100%
+src\evidence_engine\domain\evidence\__init__.py                    0      0      0      0   100%
+src\evidence_engine\domain\evidence\cooccurrence.py               45      2     12      2    93%
+src\evidence_engine\domain\evidence\document.py                   87      9     24      1    87%
+src\evidence_engine\domain\evidence\ledger.py                     65      0     12      0   100%
+src\evidence_engine\domain\quality\__init__.py                     0      0      0      0   100%
+src\evidence_engine\domain\quality\assessment.py                  77      6     14      4    89%
+src\evidence_engine\domain\sessions\__init__.py                    0      0      0      0   100%
+src\evidence_engine\domain\sessions\capabilities.py               70      7     12      3    88%
+src\evidence_engine\domain\sessions\clock.py                      30      3      8      3    84%
+src\evidence_engine\domain\sessions\consent.py                    46      3     16      3    90%
+src\evidence_engine\domain\sessions\sequencing.py                 65      2     16      1    96%
+src\evidence_engine\domain\sessions\session.py                    62      2      4      0    97%
+src\evidence_engine\domain\sessions\state.py                      27      0      2      0   100%
+src\evidence_engine\domain\shared\__init__.py                      0      0      0      0   100%
+src\evidence_engine\domain\shared\confidence.py                   25      1      2      1    93%
+src\evidence_engine\domain\shared\errors.py                        9      0      0      0   100%
+src\evidence_engine\domain\shared\identifiers.py                  38      1      2      1    95%
+src\evidence_engine\domain\shared\measurement.py                  41      0      4      0   100%
+src\evidence_engine\domain\shared\provenance.py                   79      5     12      3    91%
+src\evidence_engine\domain\shared\taxonomy.py                     83      1      2      1    98%
+src\evidence_engine\domain\shared\timeline.py                     43      8     10      3    79%
+src\evidence_engine\domain\speech_events\__init__.py               0      0      0      0   100%
+src\evidence_engine\domain\speech_events\events.py                53      2     16      1    96%
+src\evidence_engine\domain\speech_events\prosody.py               33      1      4      1    95%
+src\evidence_engine\domain\transcript\__init__.py                  0      0      0      0   100%
+src\evidence_engine\domain\transcript\tokens.py                   76      3     14      3    93%
+src\evidence_engine\domain\transcript\transcript.py               64      5     16      1    90%
+src\evidence_engine\domain\visual_events\__init__.py               0      0      0      0   100%
+src\evidence_engine\domain\visual_events\calibration.py           30      0      6      0   100%
+src\evidence_engine\domain\visual_events\events.py                56      6     14      5    81%
+------------------------------------------------------------------------------------------------
+TOTAL                                                           2549    151    478     98    91%
+
+=== coverage gate: corpus tooling, floor 95 ===
+Name                                Stmts   Miss Branch BrPart  Cover
+---------------------------------------------------------------------
+src\corpus\__init__.py                  0      0      0      0   100%
+src\corpus\agreement\__init__.py        0      0      0      0   100%
+src\corpus\agreement\matching.py      115      0     36      0   100%
+src\corpus\agreement\measures.py       94      0     22      0   100%
+src\corpus\agreement\report.py        170      1     42      1    99%
+src\corpus\cli\__init__.py              0      0      0      0   100%
+src\corpus\cli\main.py                243     14     56      5    94%
+src\corpus\io\__init__.py               0      0      0      0   100%
+src\corpus\io\elan.py                 243     11     44      4    95%
+src\corpus\partition\__init__.py        0      0      0      0   100%
+src\corpus\partition\freeze.py        163      9     50      8    92%
+src\corpus\partition\inventory.py     105      2     26      2    97%
+src\corpus\partition\split.py         164      1     54      1    99%
+src\corpus\schema\__init__.py           0      0      0      0   100%
+src\corpus\schema\records.py          174      1     64      0    99%
+src\corpus\schema\validation.py        86      0     28      0   100%
+---------------------------------------------------------------------
+TOTAL                                1557     39    422     21    97%
