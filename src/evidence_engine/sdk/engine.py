@@ -30,6 +30,7 @@ own one, and picking which is a decision for whoever has a real use for it.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 import wave
 from dataclasses import dataclass
@@ -278,7 +279,13 @@ class OratoriaEngine:
         if self._warmed:
             return
         if self._speech is None:
-            self._speech = self._configuration.build_speech_runtime()
+            # Off the event loop. Loading the baseline is ~20 s of blocking
+            # CPU and GPU work, and the first consumer to embed this engine in
+            # a server found out how: the WebSocket it was serving missed
+            # every keepalive during the load and was closed by its peer with
+            # "ping timeout". An `async def` that blocks for twenty seconds is
+            # a synchronous function with a misleading signature.
+            self._speech = await asyncio.to_thread(self._configuration.build_speech_runtime)
         # The run records what is wired, by role, from the moment it opens -
         # and the speech runtime is only known now.
         self._open_run = OpenProcessingRun(

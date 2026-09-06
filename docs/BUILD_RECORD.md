@@ -444,6 +444,14 @@ runtime, loads the weights and decodes; `analyze_file` and `create_stream`
 refuse with `EngineNotWarmed` until it has. `aclose()` drops the runtime and
 empties CUDA's cached allocator.
 
+**The load runs off the event loop.** `warmup()` called the builder inline,
+and the first consumer to embed the engine in a server - OratorIA's own
+backend - found out what that means: ~20 s during which the WebSocket it was
+serving missed every keepalive and was closed by its peer with "ping
+timeout" before the first window was decoded. The builder now runs in a
+thread; `tests/contract/test_warmup_keeps_the_loop_alive.py` holds a ticker
+against a deliberately slow builder.
+
 **Measured on the workstation** (RTX 5060 Laptop, 8150 MiB, sm_120):
 
 | | |
