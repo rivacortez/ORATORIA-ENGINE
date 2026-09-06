@@ -250,6 +250,10 @@ class WordTokenRow(Base):
             "and placement_unavailable_reason is not null)",
             name="ck_token_placement_exactly_one_state",
         ),
+        # The only provenance-bearing row that lacked this. `seed_from_columns`
+        # returns the seed when both are set and drops the reason without a
+        # word, so the constraint is what keeps a direct write honest.
+        _seed_xor_reason("ck_token_seed_xor_reason"),
         CheckConstraint(
             "confidence is null or confidence between 0 and 1",
             name="ck_token_confidence",

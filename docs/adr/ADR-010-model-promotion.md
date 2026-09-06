@@ -25,7 +25,9 @@ registry activates, promotes and rolls back **per role**. Keyed by modality, as
 it was, "canary a classifier" and "replace the recogniser" were the same
 operation and a manifest could hold one audio model - the scenario above could
 not be recorded, let alone rolled back. Two versions of one role inside a
-single run is refused, not recorded. See `docs/BUILD_RECORD.md` §3.20.
+single run is refused, not recorded. No runtime wires a context classifier
+today; when one exists as a separate component, the event it classifies needs
+its own provenance beside the detector's. See `docs/BUILD_RECORD.md` §3.20.
 
 **Only evaluated artifacts are promotable.** The registry refuses anything not
 in `EVALUATED` or `APPROVED`.

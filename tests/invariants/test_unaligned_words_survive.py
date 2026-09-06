@@ -23,17 +23,19 @@ from __future__ import annotations
 
 import pytest
 
+from evidence_engine.application.services.speech_assembly import silent_pauses
 from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.errors import FabricatedValue
 from evidence_engine.domain.shared.identifiers import (
     ConfigurationSnapshotId,
     EvidenceRef,
     ModelVersionId,
+    RunId,
     TokenId,
 )
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
 from evidence_engine.domain.shared.provenance import Modality, ModelRole, Provenance
-from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
+from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION, SpeechEventType
 from evidence_engine.domain.shared.timeline import Interval, MonotonicTime
 from evidence_engine.domain.transcript import transcript as transcript_module
 from evidence_engine.domain.transcript.tokens import (
@@ -278,3 +280,34 @@ def test_a_placed_word_behind_the_time_frontier_is_still_refused() -> None:
 
     with pytest.raises(TranscriptViolation, match="finalized frontier"):
         transcript.with_provisional([placed("adios", 200, 600, 9)])
+
+
+# ---------------------------------------------------------------------------
+# Derivation: a gap that contains a word is not a silence
+# ---------------------------------------------------------------------------
+
+
+def test_a_gap_around_an_unplaced_word_is_not_a_silent_pause() -> None:
+    """ "vamos [analizar] esto": 400 ms to 900 ms is not 500 ms of silence.
+
+    A word was heard in that stretch and nobody knows where. Sorting the
+    placed words by start and pairing them would report a silent pause across
+    it - silence invented from a failed alignment, which is FR-025's exact
+    prohibition - and before the frontier settled unplaced words on the live
+    path, the sort itself raised on the token with no start.
+    """
+    tokens = [
+        placed("vamos", 0, 400, 0),
+        unplaced("analizar", 1),
+        placed("esto", 900, 1_200, 2),
+        placed("ahora", 2_400, 2_700, 3),
+    ]
+
+    pauses = silent_pauses(
+        tokens, threshold_ms=500, provenance=RECOGNISER, run_id=RunId("run-test")
+    )
+
+    # One pause, the real one: 1 200 ms to 2 400 ms between two placed
+    # neighbours. Nothing across the unplaced word.
+    assert [(p.interval.start.ms, p.interval.end.ms) for p in pauses] == [(1_200, 2_400)]
+    assert all(p.type is SpeechEventType.SILENT_PAUSE for p in pauses)

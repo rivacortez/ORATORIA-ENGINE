@@ -179,6 +179,11 @@ class DeterministicSpeechRuntime:
                 score=event.score,
                 raw_text=event.raw_text,
                 context_role=event.context_role,
+                # The script plays the detector. It also writes the
+                # `context_role` above, and no classifier exists as a separate
+                # component to attribute that to - so the event is the
+                # detector's, stated here rather than defaulted.
+                role=ModelRole.DISFLUENCY_DETECTOR,
             )
             for event in self._script.events
             if event.end_ms > active_from_ms and event.start_ms < window_end_ms
@@ -218,6 +223,7 @@ class DeterministicSpeechRuntime:
                 end_ms=end_ms,
                 value=-22.5 if has_speech else -60.0,
                 score=0.9,
+                role=ModelRole.PROSODY_ESTIMATOR,
             ),
             ProsodyHypothesis(
                 indicator=ProsodicIndicator.PITCH_MEAN_HZ,
@@ -225,6 +231,7 @@ class DeterministicSpeechRuntime:
                 end_ms=end_ms,
                 value=132.0 if has_speech else None,
                 score=0.8 if has_speech else 0.0,
+                role=ModelRole.PROSODY_ESTIMATOR,
             ),
             ProsodyHypothesis(
                 indicator=ProsodicIndicator.VOICED_RATIO,
@@ -232,6 +239,7 @@ class DeterministicSpeechRuntime:
                 end_ms=end_ms,
                 value=0.74 if has_speech else 0.0,
                 score=0.95,
+                role=ModelRole.PROSODY_ESTIMATOR,
             ),
         )
 

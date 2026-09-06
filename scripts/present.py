@@ -40,8 +40,8 @@ from evidence_engine.application.services.speech_assembly import (
     SpeechAssembler,
     silent_pauses,
 )
-from evidence_engine.domain.shared.identifiers import RunId
-from evidence_engine.domain.shared.provenance import EvidenceRef, Modality, Provenance
+from evidence_engine.domain.shared.identifiers import EvidenceRef, RunId
+from evidence_engine.domain.shared.provenance import Modality, ModelRole, Provenance
 from evidence_engine.domain.transcript.tokens import WordToken
 
 #: The engine's decode target. `REFERENCE_ENVIRONMENT.md` gates Pilot A on four
@@ -286,6 +286,7 @@ async def run(path: Path, as_json: bool) -> int:
 
     provenance = Provenance(
         modality=Modality.AUDIO,
+        role=ModelRole.RECOGNISER,
         model_version=runtime.model_version,
         taxonomy_version=configuration.taxonomy_version,
         configuration=configuration.id,
@@ -299,7 +300,11 @@ async def run(path: Path, as_json: bool) -> int:
     )
 
     transcript = " ".join(token.raw_text for token in tokens)
-    speaking_ms = sum(token.interval.end.ms - token.interval.start.ms for token in tokens)
+    # Placed words only: an unplaced word was heard but has no interval, and
+    # reaching for one would raise `FabricatedValue` - correctly.
+    speaking_ms = sum(
+        token.interval.end.ms - token.interval.start.ms for token in tokens if token.is_timed
+    )
     silent_ms = sum(pause.interval.end.ms - pause.interval.start.ms for pause in pauses)
 
     if as_json:
@@ -313,12 +318,23 @@ async def run(path: Path, as_json: bool) -> int:
                     "taxonomy_version": str(configuration.taxonomy_version),
                     "silence_threshold_ms": configuration.silence_threshold_ms,
                     "transcript": transcript,
+                    # The same two shapes the wire publishes: a placed word
+                    # carries its interval, an unplaced one carries the reason
+                    # and no numbers at all.
                     "words": [
-                        {
-                            "text": token.raw_text,
-                            "start_ms": token.interval.start.ms,
-                            "end_ms": token.interval.end.ms,
-                        }
+                        (
+                            {
+                                "text": token.raw_text,
+                                "start_ms": token.interval.start.ms,
+                                "end_ms": token.interval.end.ms,
+                            }
+                            if token.is_timed
+                            else {
+                                "text": token.raw_text,
+                                "alignment": "unavailable",
+                                "detail": token.placement.detail,  # type: ignore[union-attr]
+                            }
+                        )
                         for token in tokens
                     ],
                     "silent_pauses": [

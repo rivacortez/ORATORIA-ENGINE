@@ -58,6 +58,14 @@ async def ready(engine: EngineDep) -> JSONResponse:
         else:
             checks[f"model:{role.value}"] = f"ready ({version.id.value})"
 
+    # "Absent" is acceptable for every role but one. A deployment with no
+    # recogniser has nothing to produce a transcript from, and reporting it
+    # ready would send it traffic it can only fail. Nothing in the runtime
+    # protocol forces a recogniser into `contributions` - only the per-call
+    # `SpeechResult` does - so the probe has to say it here.
+    if ModelRole.RECOGNISER not in wired:
+        checks[f"model:{ModelRole.RECOGNISER.value}"] = "unavailable (no recogniser wired)"
+
     checks["backend"] = engine.profile.backend
     checks["runtime_mode"] = engine.profile.runtime_mode
 

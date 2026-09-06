@@ -250,10 +250,20 @@ def silent_pauses(
     Only interior gaps count. The silence before the first word and after the
     last are not pauses in the presentation - they are the operator finding the
     stop button - and the taxonomy says so explicitly.
+
+    Walked in **lexical** order, and only between two placed neighbours. A
+    pause is the gap between two words spoken one after the other; sorting by
+    start time needs a start every token has, which an unplaced word does not,
+    and it would also pair the words on either side of one as if nothing had
+    been said between them. Something was: a word was heard there and nobody
+    knows where. That stretch is a gap in the alignment, not a silence, and
+    FR-025 says an absence is reported rather than rounded down to a pause.
     """
-    ordered = sorted(tokens, key=lambda t: t.interval.start.ms)
+    ordered = sorted(tokens, key=lambda t: t.sequence)
     pauses: list[SpeechEvent] = []
     for previous, following in pairwise(ordered):
+        if not (previous.is_timed and following.is_timed):
+            continue
         gap_ms = following.interval.start.ms - previous.interval.end.ms
         if gap_ms < threshold_ms:
             continue

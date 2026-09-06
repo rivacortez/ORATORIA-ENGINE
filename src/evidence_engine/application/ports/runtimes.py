@@ -242,14 +242,21 @@ class SpeechEventHypothesis:
     start_ms: int
     end_ms: int
     score: float
-    raw_text: str = ""
-    context_role: ContextualRole | None = None
     #: Which component produced this hypothesis. The assembler looks the
     #: version up in `SpeechResult.contributions` by this key and refuses a
     #: role the result did not declare - attributing a detector's event to
     #: the recogniser because the detector forgot to say its name is the
     #: silent substitution the whole provenance model exists to prevent.
-    role: ModelRole = ModelRole.DISFLUENCY_DETECTOR
+    #:
+    #: No default, on purpose. With `DISFLUENCY_DETECTOR` as the fallback an
+    #: event carrying a `context_role` - the classifier's decision, when a
+    #: classifier exists - was attributed to the detector by a runtime that
+    #: never said so, and nothing could tell a declared role from an omitted
+    #: one. The emitter states the role; a wrong role is then a visible
+    #: decision at one line rather than a default nobody reads.
+    role: ModelRole
+    raw_text: str = ""
+    context_role: ContextualRole | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,8 +273,8 @@ class ProsodyHypothesis:
     start_ms: int
     end_ms: int
     value: float | None
+    role: ModelRole
     score: float = 0.0
-    role: ModelRole = ModelRole.PROSODY_ESTIMATOR
 
 
 @dataclass(frozen=True, slots=True)

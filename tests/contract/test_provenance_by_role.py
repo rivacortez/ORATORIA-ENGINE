@@ -209,7 +209,11 @@ def test_two_audio_components_are_both_recorded() -> None:
         words=(_word("eh", 0, 300, 0),),
         events=(
             SpeechEventHypothesis(
-                type=SpeechEventType.FILLED_PAUSE, start_ms=0, end_ms=300, score=0.9
+                type=SpeechEventType.FILLED_PAUSE,
+                start_ms=0,
+                end_ms=300,
+                score=0.9,
+                role=ModelRole.DISFLUENCY_DETECTOR,
             ),
         ),
     )
@@ -277,7 +281,11 @@ def test_each_hypothesis_carries_its_own_components_version() -> None:
         words=(_word("eh", 0, 300, 0),),
         events=(
             SpeechEventHypothesis(
-                type=SpeechEventType.FILLED_PAUSE, start_ms=0, end_ms=300, score=0.9
+                type=SpeechEventType.FILLED_PAUSE,
+                start_ms=0,
+                end_ms=300,
+                score=0.9,
+                role=ModelRole.DISFLUENCY_DETECTOR,
             ),
         ),
         prosody=(
@@ -287,6 +295,7 @@ def test_each_hypothesis_carries_its_own_components_version() -> None:
                 end_ms=1_000,
                 value=120.0,
                 score=0.8,
+                role=ModelRole.PROSODY_ESTIMATOR,
             ),
         ),
     )
@@ -310,7 +319,11 @@ def test_a_hypothesis_from_an_undeclared_component_is_refused() -> None:
         contributions={ModelRole.RECOGNISER: RECOGNISER},
         events=(
             SpeechEventHypothesis(
-                type=SpeechEventType.FILLED_PAUSE, start_ms=0, end_ms=300, score=0.9
+                type=SpeechEventType.FILLED_PAUSE,
+                start_ms=0,
+                end_ms=300,
+                score=0.9,
+                role=ModelRole.DISFLUENCY_DETECTOR,
             ),
         ),
     )

@@ -52,6 +52,7 @@ from evidence_engine.domain.shared.provenance import Modality, Provenance
 from evidence_engine.domain.shared.timeline import MonotonicTime
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
+from evidence_engine.domain.transcript.tokens import Placement, Timed
 from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
@@ -116,6 +117,10 @@ class StreamingCoordinator:
         self._speech_assembler = speech_assembler
         self._visual_assembler = visual_assembler
         self._max_queue_depth = max_queue_depth
+        #: Where each ingested audio window ends, by its start. The sequence
+        #: frontier is stated from these: a token is settled when the window
+        #: it came from is, placed or not.
+        self._window_ends: dict[int, int] = {}
 
     @property
     def state(self) -> StreamingState:
@@ -153,6 +158,9 @@ class StreamingCoordinator:
         finally:
             self._state.in_flight -= 1
 
+        self._window_ends[window.session_position_ms] = (
+            window.session_position_ms + window.duration_ms
+        )
         assembled = self._speech_assembler.assemble(result)
 
         self._state.transcript = self._state.transcript.with_provisional(assembled.tokens)
@@ -173,12 +181,23 @@ class StreamingCoordinator:
         words the aligner could not place, which have no interval to compare
         and would otherwise stay provisional for the whole session.
 
-        The sequence boundary is the largest sequence among tokens the time
-        boundary just settled, and it is stated rather than inferred from a
-        neighbour: an unplaced word is finalized because the coordinator
-        committed the audio it came from, never because the word next to it
-        happens to be stable. That distinction is the difference between a
-        decision and a guess.
+        The sequence boundary is stated from the audio the coordinator has
+        committed, never inferred from a neighbour: every token produced by a
+        window that ends at or before ``stable_through_ms`` is settled, placed
+        or not, because the runtime declared that whole stretch decoded and
+        final. An unplaced word is finalized because the coordinator committed
+        the audio it came from, never because the word next to it happens to
+        be stable. That distinction is the difference between a decision and a
+        guess.
+
+        The first version took the boundary from the *placed* tokens the time
+        frontier had just settled. An unplaced word at the end of a window then
+        stayed provisional - nothing placed came after it - and the next
+        window's hypothesis replaced the provisional tail wholesale, so the
+        word was deleted. With a runtime that declares each window stable
+        through its end, which is what whisper does, that was every trailing
+        word the aligner failed on. The settled placed tokens still count, as
+        a lower bound, for a runtime whose stable stretch ends mid-window.
         """
         if stable_through_ms <= self._state.transcript.finalized_time_frontier.ms:
             return
@@ -186,8 +205,14 @@ class StreamingCoordinator:
         boundary = MonotonicTime(stable_through_ms)
         transcript = self._state.transcript.finalize_through_time(boundary)
         settled = [t.sequence for t in transcript.tokens if t.is_timed and t.is_final]
-        if settled:
-            transcript = transcript.finalize_through_sequence(max(settled))
+        committed = [
+            t.sequence
+            for t in transcript.tokens
+            if self._window_committed(t.sequence.window_position_ms, stable_through_ms)
+        ]
+        frontier = max(settled + committed, default=None)
+        if frontier is not None:
+            transcript = transcript.finalize_through_sequence(frontier)
         self._state.transcript = transcript
 
         newly_final: list[SpeechEvent] = []
@@ -203,6 +228,16 @@ class StreamingCoordinator:
 
         await self._publish_transcript(is_final=True)
         await self._publish_speech(tuple(newly_final), is_final=True)
+
+    def _window_committed(self, position_ms: int, stable_through_ms: int) -> bool:
+        """Whether the window that starts at ``position_ms`` ends at or before the stable point.
+
+        Known only for windows this coordinator ingested itself. After a
+        handler restart the map is empty, and the placed-token lower bound in
+        `_finalize_through` is what remains until the next window lands.
+        """
+        end = self._window_ends.get(position_ms)
+        return end is not None and end <= stable_through_ms
 
     # -- video ------------------------------------------------------------
 
@@ -360,6 +395,11 @@ class StreamingCoordinator:
         )
         if not tokens:
             return
+        # The event's clock reading comes from the last *placed* word. An
+        # unplaced one has no end to read, and a batch that is entirely
+        # unplaced - possible, the aligner fails per word - falls back to the
+        # frontier rather than to a number nobody measured.
+        placed = [token for token in tokens if token.is_timed]
         await self._channel.publish(
             OutboundEvent(
                 type=(
@@ -368,15 +408,18 @@ class StreamingCoordinator:
                     else ServerMessageType.TRANSCRIPT_PARTIAL
                 ),
                 session_id=self._state.session_id,
-                monotonic_time_ms=tokens[-1].interval.end.ms,
+                monotonic_time_ms=(
+                    placed[-1].interval.end.ms
+                    if placed
+                    else self._state.transcript.finalized_time_frontier.ms
+                ),
                 payload={
                     "tokens": [
                         {
                             "id": token.id.value,
                             "raw_text": token.raw_text,
-                            "start_ms": token.interval.start.ms,
-                            "end_ms": token.interval.end.ms,
-                            "tolerance_ms": token.interval.tolerance_ms,
+                            "model_version": token.provenance.model_version.value,
+                            **_token_placement(token.placement),
                             **_token_confidence(token.confidence),
                         }
                         for token in tokens
@@ -456,6 +499,31 @@ def _speech_payload(event: SpeechEvent) -> dict[str, object]:
         "model_version": event.provenance.model_version.value,
         "taxonomy_version": str(event.provenance.taxonomy_version),
         "evidence_ref": event.provenance.evidence_ref.value,
+    }
+
+
+def _token_placement(placement: Placement) -> dict[str, object]:
+    """Where the word sat, or the reason that is unknown - the live-wire twin
+    of the REST serializer's `_render_placement`.
+
+    Reading `token.interval` here unconditionally was the streaming copy of
+    §4.14: the domain admits a word with no placement, and the first live
+    session to produce one raised `FabricatedValue` out of the publisher and
+    ended the session. Disjoint key sets, as on REST: an unplaced word has no
+    `start_ms` at all rather than `"start_ms": null`, because a null in a
+    numeric field is what a consumer coerces to zero.
+    """
+    if isinstance(placement, Timed):
+        return {
+            "placed": True,
+            "start_ms": placement.interval.start.ms,
+            "end_ms": placement.interval.end.ms,
+            "tolerance_ms": placement.interval.tolerance_ms,
+        }
+    return {
+        "placed": False,
+        "placement_unavailable_reason": placement.reason.value,
+        "placement_unavailable_detail": placement.detail,
     }
 
 

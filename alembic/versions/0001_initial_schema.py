@@ -402,6 +402,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	PRIMARY KEY (id),
         	CONSTRAINT ck_token_interval CHECK (start_ms is null or end_ms >= start_ms),
         	CONSTRAINT ck_token_placement_exactly_one_state CHECK ((start_ms is not null and end_ms is not null and tolerance_ms is not null and placement_unavailable_reason is null) or (start_ms is null and end_ms is null and tolerance_ms is null and placement_unavailable_reason is not null)),
+        	CONSTRAINT ck_token_seed_xor_reason CHECK ((seed is not null and seed between 0 and 9007199254740991 and seed_reason is null) or (seed is null and seed_reason is not null)),
         	CONSTRAINT ck_token_confidence CHECK (confidence is null or confidence between 0 and 1),
         	CONSTRAINT ck_token_confidence_exactly_one_state CHECK ((confidence is not null and calibration is not null and confidence_unavailable_reason is null) or (confidence is null and calibration is null and confidence_unavailable_reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE

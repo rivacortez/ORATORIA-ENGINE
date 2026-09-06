@@ -164,7 +164,11 @@ warn_unreachable = true
 disallow_any_generics = true
 plugins = []
 mypy_path = "src"
-packages = ["evidence_engine", "corpus"]
+# `src` covers both packages; `scripts` is here because `present.py` builds
+# domain objects by hand and is the command the README tells a person to run.
+# It broke on a required field the whole battery could not see, because
+# nothing typed or executed it.
+files = ["src", "scripts"]
 
 [[tool.mypy.overrides]]
 # The local runtime's stack. An optional extra rather than a dependency - the
@@ -172,7 +176,7 @@ packages = ["evidence_engine", "corpus"]
 # find them in the default environment and must not fail the gate for it. The
 # adapter imports them inside a function and re-raises with an install command,
 # which is the behaviour these overrides exist to permit.
-module = ["torch.*", "transformers.*", "numpy.*"]
+module = ["torch.*", "transformers.*", "numpy.*", "sounddevice.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

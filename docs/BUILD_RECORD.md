@@ -477,9 +477,20 @@ registry activates, promotes and rolls back per role. A `ProcessingRun`
 records the roles it was opened with, before any evidence exists.
 
 **Why not one model per modality.** `Mapping[Modality, ...]` held exactly one
-audio model. The engine QA-03 describes has at least three - recogniser,
-disfluency detector, context classifier - and the manifest's `setdefault`
-recorded whichever spoke first and said nothing about the rest. The same key
+audio model. The engine QA-03 describes has at least three audio components -
+recogniser, disfluency detector, context classifier - of which the runtimes
+shipped today wire the first two, and the manifest's `setdefault` recorded
+whichever spoke first and said nothing about the rest.
+
+**What is not wired, said plainly.** No runtime declares a context
+classifier; the role exists in the enum and nowhere else. An event that
+carries a `context_role` today is attributed to the detector that emitted it,
+and `SpeechEventHypothesis` now requires its role to be stated rather than
+defaulting to the detector, so that attribution is a decision written at the
+emitter and not a fallback nobody reads. The day a classifier exists as a
+separate component, an event will need a second provenance - the detection
+is the detector's, the role is the classifier's - and that is a domain
+change, recorded here as the next one rather than folded into this. The same key
 collapsed the registry: with `active_for(AUDIO)`, promoting a classifier and
 replacing the recogniser were the same operation, so ADR-010's own scenario
 could not be written down.
@@ -751,6 +762,51 @@ stopped at the transcript.
 **Rule.** A union added at one layer has to be driven through every layer that
 consumes it, in one test, or the layers that were never exercised keep the old
 assumption.
+
+---
+
+### 4.15 The live path deleted the word §3.14 had saved
+
+§3.14 kept a word the aligner could not place, and §4.14 found the document
+invariant reading its interval anyway. Specifying the adapter that plugs the
+engine into a live consumer found two more copies of the same assumption, both
+on the streaming path, both unreachable by every test that existed: neither
+the batch path nor the exit-criterion script ever produced an unplaced word at
+the end of a window.
+
+_The frontier deleted it._ `_finalize_through` took the sequence boundary
+from the _placed_ tokens the time frontier had just settled, under a docstring
+saying the boundary was "stated rather than inferred". A window ending in an
+unplaced word left that word provisional, and the next window's hypothesis
+replaced the provisional tail wholesale. whisper declares every window stable
+through its end, so this was every trailing word its alignment heads failed
+on - silently gone, and `unaligned_count` agreed, because the word was no
+longer there to count.
+
+_The publisher crashed on it._ `_publish_transcript` read `token.interval` on
+every token. The first `transcript.final` carrying an unplaced word raised
+`FabricatedValue` out of the coordinator and ended the session.
+
+_The derivation sorted on it._ Fixing the frontier made a third copy
+reachable: `silent_pauses` sorted the final tokens by start time, which an
+unplaced word does not have, and paired the words on either side of one as if
+nothing had been said between them. Something was - a word was heard there
+and nobody knows where - so that stretch is a gap in the alignment, not a
+silence. It now walks lexical order and derives a pause only between two
+placed neighbours.
+
+**Cost.** Nothing yet: found by reading the publisher before a real session
+ran through it, and the third copy by the regression for the first two.
+**Rule.** The one §4.14 already states, applied again, with "every layer" now
+including the live path driven by a runtime shaped like the real one - one
+window, its own words, stable through its end. The frontier is stated from
+committed audio; the wire carries `placed: false` and no numbers; a pause is
+never derived across a word.
+
+Found in the same pass and deliberately left alone: `transcript.partial` is
+declared in §7.3 and never emitted, because the publisher's provisional branch
+has no caller. Activating it is a product decision, not a fix. Recorded so
+nobody reads the enum as a promise the engine keeps.
 
 ## 5. What is blocked, and by what
 
