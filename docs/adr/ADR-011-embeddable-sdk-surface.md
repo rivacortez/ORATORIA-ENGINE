@@ -191,6 +191,12 @@ identifiers and stamps that differ by construction. It passes.
   the final window's events and `session.completed` after `finish()` has
   closed the stream for sending, and a consumer draining them concurrently
   must not be thrown out. Both sessions hold to it (BUILD_RECORD §3.21).
+- `finish()`'s bounds are sized against the consumer's finalisation budget
+  (45 s of `/result` polling under OratorIA's 60 s), a 409 naming
+  `retry_after_seconds` is honoured, a stream that died before
+  `session.completed` fails at once rather than polling for a result that
+  cannot exist, and the default transport gives a keepalive 60 s. Found on
+  the second live session, with the station under load (BUILD_RECORD §3.21).
 
 **What is still not built.** No positive per-chunk acknowledgement exists on
 the wire, so a refusal for the very last chunk of a session can still arrive

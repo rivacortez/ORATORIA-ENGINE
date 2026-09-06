@@ -652,6 +652,26 @@ for the remote session, the reader task ended) and the queue is empty - and
 only then raises. `tests/contract/test_receive_outlives_finish.py` holds both
 paths to it, and was proved red against the previous `receive()` on each.
 
+**Amendment - `finish()` on a station that is slow or gone.** The second
+live session through the client ran while the workstation was also running a
+full test suite; the engine fell ~13 s behind real time and the stream died
+before `session.completed` (the server never received `session.complete`, its
+session stayed `capturing`). `finish()` then spent its whole 10 s poll bound
+collecting 409s for a result that could not exist. Three changes, each held
+by `tests/contract/test_finish_bounds.py` and proved red first: (1) a reader
+that ended without `session.completed`/`session.aborted` makes `finish()`
+raise `RemoteEngineUnavailable` at once, naming the lost stream, instead of
+polling; (2) `RESULT_POLL_BOUND_SECONDS` is 45 s - sized under OratorIA's
+60 s finalisation budget so a slow reconciliation is reported as the
+engine's, not lost inside the consumer's own timeout - and a 409 that names
+`retry_after_seconds` is believed over the client's backoff; (3) the default
+transport tolerates 60 s for a keepalive answer (`PING_TIMEOUT_SECONDS`)
+rather than the library's 20 s, because a workstation mid-decode under load
+misses pings and a dropped stream costs the session its whole tail. What
+this does not change: a station that is genuinely overloaded still fails the
+session - honestly, as `incomplete` on the OratorIA side - which is the
+pilot's rule that the station is dedicated, not a thing the client can fix.
+
 ---
 
 ## 4. Mistakes, and what they cost

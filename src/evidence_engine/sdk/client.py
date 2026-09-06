@@ -79,7 +79,19 @@ from evidence_engine.sdk.results import evidence_from_json
 #: How long `finish()` polls `GET /result` for before giving up. §6.1 step 10
 #: runs a reconciliation pass after `session.complete`; this is how long a
 #: client waits for it to land, not a guess at how long it usually takes.
-RESULT_POLL_BOUND_SECONDS = 10.0
+#: Sized against the consumer that drives this: OratorIA's finalisation
+#: protocol gives its ASR adapter 60 s in total before it declares the tail of
+#: a session unprocessed, so this stays under that - a slow reconciliation on
+#: a busy station is reported by the engine, not swallowed by the consumer's
+#: own timeout. A 409 that names `retry_after_seconds` is honoured as is.
+RESULT_POLL_BOUND_SECONDS = 45.0
+#: How long the transport tolerates an unanswered keepalive ping before it
+#: declares the stream dead. The default of the `websockets` library is 20 s,
+#: which a GPU workstation mid-decode under load can miss - and a dropped
+#: stream costs the session its whole tail, since the server never receives
+#: `session.complete`. Generous on purpose: a genuinely dead station is caught
+#: by `finish()`'s own bounds, not by a nervous ping.
+PING_TIMEOUT_SECONDS = 60.0
 #: How long `abort()` waits for `session.aborted` before closing anyway. An
 #: abort that never gets acknowledged should not hang a caller who is already
 #: trying to leave.
@@ -186,7 +198,7 @@ class HttpxTransport:
     async def ws_connect(self, url: str) -> WsConnection:
         import websockets
 
-        connection = await websockets.connect(url)
+        connection = await websockets.connect(url, ping_timeout=PING_TIMEOUT_SECONDS)
         return _WebsocketsConnection(connection)
 
     async def aclose(self) -> None:
@@ -639,6 +651,19 @@ class RemoteStreamSession:
             await state.reader_task
         await self._ws.close()
 
+        if state.completion_payload is None:
+            # The reader ended without `session.completed` or `session.aborted`:
+            # the socket died while the engine was still capturing. Polling
+            # `/result` now would only collect 409s for the whole bound - the
+            # server never received `session.complete`, so there is no result
+            # and will not be one. Seen live: a station under load missed a
+            # keepalive, and the client spent its poll bound learning nothing.
+            raise RemoteEngineUnavailable(
+                "the stream closed before the engine confirmed `session.completed`: the "
+                "connection was lost while the engine was still capturing, so no result "
+                "exists to fetch and the session on the engine side is not completed."
+            )
+
         document = await self._poll_result()
         completion = state.completion_payload or {}
         return AnalysisResult(
@@ -661,6 +686,12 @@ class RemoteStreamSession:
                 return body
             if status != 409 or time.monotonic() >= deadline:
                 raise RemoteEngineUnavailable(f"{url} returned HTTP {status}: {body}")
+            # A 409 that says how long reconciliation still needs is believed
+            # over this client's own backoff: the server knows, this side guesses.
+            retry_after = body.get("retry_after_seconds")
+            if isinstance(retry_after, int | float) and retry_after > 0:
+                await asyncio.sleep(float(retry_after))
+                continue
             await asyncio.sleep(backoff_seconds)
             backoff_seconds = min(backoff_seconds * 2, 1.0)
 
