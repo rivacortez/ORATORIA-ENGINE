@@ -462,6 +462,49 @@ window, so window padding dominates it. It is evidence that the card keeps up
 on this input, not a throughput figure - and `REFERENCE_ENVIRONMENT.md` says a
 development laptop never sources a reported number anyway.
 
+### 3.20 Provenance is attributed to a component, not to a modality
+
+**Decision.** The unit of attribution is `ModelRole` - `recogniser`,
+`disfluency_detector`, `context_classifier`, `prosody_estimator`,
+`visual_estimator` - and every piece of evidence carries the role that produced
+it, word tokens included. A `SpeechResult` declares its
+`contributions: Mapping[ModelRole, ModelVersionId]`; the assembler attributes
+each hypothesis to the version declared for its role and refuses a hypothesis
+whose role was never declared. The manifest is `Mapping[ModelRole,
+ModelVersionId]`, collected from the evidence; a second version of one role
+inside a single run raises `ProvenanceViolation` rather than being dropped. The
+registry activates, promotes and rolls back per role. A `ProcessingRun`
+records the roles it was opened with, before any evidence exists.
+
+**Why not one model per modality.** `Mapping[Modality, ...]` held exactly one
+audio model. The engine QA-03 describes has at least three - recogniser,
+disfluency detector, context classifier - and the manifest's `setdefault`
+recorded whichever spoke first and said nothing about the rest. The same key
+collapsed the registry: with `active_for(AUDIO)`, promoting a classifier and
+replacing the recogniser were the same operation, so ADR-010's own scenario
+could not be written down.
+
+**Why tokens carry provenance.** The sixth blocker in §5: the manifest read
+provenance off _events_, so a Whisper run with five recognised words and no
+disfluency recorded `models: {}`. A word is derived evidence (NFR-014). Silent
+pauses made it circular: they are computed from two word boundaries, yet they
+borrowed an event's provenance, and a runtime that emits no events - the
+baseline - therefore never derived one on the streaming path. They now carry
+the recogniser's, the model whose boundaries they were computed from.
+
+**Two records, deliberately.** The manifest says what _contributed_: a role
+appears exactly when evidence attributed to it exists. The run says what was
+_wired_. A run that fails on its first window has an empty manifest and a full
+`models` map, which is the difference between "no model" and "no evidence".
+
+**Verified.** Nine regressions in `tests/contract/test_provenance_by_role.py`:
+one per finding, plus one that drives the roles through port, assembler,
+document, serializer and wire in a single test (§4.14's rule). Each of the
+eight defects was reintroduced in isolation against the working tree and its
+test turned red; the touched files were restored and compared by digest. On the
+deterministic runtime the detector is `deterministic-speech-v1-detector`,
+because a `model_version` row is the primary key and carries one role.
+
 ---
 
 ## 4. Mistakes, and what they cost
@@ -724,14 +767,19 @@ problem.
 ~~**A sixth, found by running a real recording through the SDK.** The evidence
 manifest records **no model** for a run that produced only a transcript.
 `_models_used` (`complete_session.py:253`) reads provenance from speech and
-visual *events*; the Whisper baseline emits none, so a document with five
+visual _events_; the Whisper baseline emits none, so a document with five
 recognised words carries `models: {}`. NFR-014 requires the model version on
 every derived event and a word token is derived evidence, so the provenance of
 the transcript is currently lost. Not a ten-line fix: `WordToken` carries no
 provenance field, so this is a design decision about where a token's model
-version lives. Blocks any claim that a transcript is attributable.
+version lives. Blocks any claim that a transcript is attributable.~~
+**Cleared 2026-09-05.** A token carries its recogniser's provenance, the
+manifest is keyed by `ModelRole` and collected from tokens as well as events,
+and a run records the roles it was opened with - §3.20. The review that
+cleared it found five more defects behind the same decision, every one of them
+now covered by a regression proved red.
 
-**A fifth, found while wiring the docs page.** There is no way to provision
+~~**A fifth, found while wiring the docs page.** There is no way to provision
 an API key in a real deployment.~~ **Cleared 2026-09-05.** `/v1/admin` and
 `PostgresApiKeyAdministration` now create applications, issue keys, list them
 and revoke them; `evidence-engine bootstrap-admin` mints the first operator

@@ -120,15 +120,20 @@ async def seeded(
         # The registry is seeded here rather than at process startup: a replica
         # that registered models on boot could silently reintroduce a version an
         # administrator had just disabled.
-        for identifier, modality in (
-            ("deterministic-speech-v1", "audio"),
-            ("deterministic-vision-v1", "video"),
+        # One row per *role*. The scripted speech runtime plays three audio
+        # components and declares three ids; a modality-keyed registry held
+        # one audio row and could not represent that.
+        for identifier, role in (
+            ("deterministic-speech-v1", "recogniser"),
+            ("deterministic-speech-v1-detector", "disfluency_detector"),
+            ("deterministic-speech-v1-prosody", "prosody_estimator"),
+            ("deterministic-vision-v1", "visual_estimator"),
         ):
             db.add(
                 models.ModelVersionRow(
                     id=identifier,
-                    modality=modality,
-                    artifact_digest=f"sha256:deterministic-{modality}",
+                    role=role,
+                    artifact_digest=f"sha256:{identifier}",
                     dataset_version="none",
                     approval=ApprovalState.EVALUATED.value,
                     metrics={},

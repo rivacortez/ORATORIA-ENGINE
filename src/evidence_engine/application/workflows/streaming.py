@@ -331,17 +331,23 @@ class StreamingCoordinator:
     def _speech_provenance(self, events: Sequence[SpeechEvent]) -> Provenance | None:
         """Provenance for events this layer derives rather than receives.
 
-        Borrowed from a real event of the same run so a derived pause carries
-        the same model and configuration versions as the tokens it was computed
-        from. Falling back to a synthetic provenance would make NFR-014's
-        traceability a half-truth for exactly the events nobody inspects, so
-        the honest answer when there is no real event to borrow from is
-        ``None`` - and the caller then derives nothing.
+        Taken from the **recogniser's own tokens**, which is what a silent pause
+        is derived from: the gap between two word boundaries, under the
+        versioned threshold. So the pause carries the version of the model
+        whose boundaries it was computed from, which is the only honest
+        attribution there is.
+
+        This used to be *borrowed from an event* - any event of the run - and
+        return ``None`` when there was none. With a runtime that emits no
+        events, which is what the Whisper baseline is, that was circular: no
+        events, so no provenance, so no pauses, so no events. The one taxonomy
+        class the README said "works today" was never derived on the streaming
+        path at all. Tokens now carry provenance, so there is always something
+        to read when there is anything to derive from.
         """
-        if events:
-            return events[0].provenance
-        for event in self._state.speech_events.values():
-            return event.provenance
+        del events
+        for token in self._state.transcript.tokens:
+            return token.provenance
         return None
 
     # -- publishing -------------------------------------------------------

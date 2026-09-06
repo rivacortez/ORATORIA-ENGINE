@@ -29,6 +29,7 @@ fail with a sentence rather than an ImportError when the extra is absent.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +42,7 @@ from evidence_engine.application.ports.runtimes import (
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.provenance import ModelRole
 from evidence_engine.domain.shared.taxonomy import ProsodicIndicator, SpeechEventType
 
 #: The artifact `BASELINE_PINS.md` pins, by identifier and revision. Hard-coded
@@ -114,6 +116,17 @@ class WhisperSpeechRuntime:
     def __init__(self, pipeline: Any, model_version: ModelVersionId) -> None:
         self._pipeline = pipeline
         self.model_version = model_version
+        #: A recogniser and nothing else. The manifest and the run record this
+        #: by role, so the day a disfluency detector is composed beside this
+        #: runtime it appears as its own entry rather than overwriting or being
+        #: overwritten by the recogniser's.
+        self._contributions: Mapping[ModelRole, ModelVersionId] = {
+            ModelRole.RECOGNISER: model_version
+        }
+
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]:
+        return self._contributions
 
     @classmethod
     def load(cls, settings: WhisperSettings | None = None) -> WhisperSpeechRuntime:
@@ -210,7 +223,7 @@ class WhisperSpeechRuntime:
         )
 
         return SpeechResult(
-            model_version=self.model_version,
+            contributions=self._contributions,
             window_position_ms=window.session_position_ms,
             words=self.words_from(output, window.session_position_ms),
             events=(),

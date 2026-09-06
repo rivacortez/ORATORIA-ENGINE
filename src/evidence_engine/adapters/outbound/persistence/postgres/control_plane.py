@@ -50,7 +50,7 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import ModelRole, SemanticVersion
 from evidence_engine.domain.visual_events.calibration import VisualCalibration
 
 
@@ -340,18 +340,18 @@ class PostgresModelRegistry:
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = factory
 
-    async def active_for(self, modality: Modality) -> ModelVersion:
+    async def active_for(self, role: ModelRole) -> ModelVersion:
         async with self._factory() as db:
             row = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == modality.value,
+                    models.ModelVersionRow.role == role.value,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
         if row is None:
             raise ControlPlaneError(
-                f"no active model for {modality.value}; the pipeline cannot run a "
-                "modality whose version it could not record (NFR-014)"
+                f"no active model for {role.value}; the pipeline cannot run a "
+                "component whose version it could not record (NFR-014)"
             )
         return _row_to_model(row)
 
@@ -376,7 +376,7 @@ class PostgresModelRegistry:
 
             previous = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == row.modality,
+                    models.ModelVersionRow.role == row.role,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
@@ -386,7 +386,7 @@ class PostgresModelRegistry:
                 # what makes QA-03's ten-minute rollback achievable.
                 row.rollback_to = previous.id
                 # Flushed before the new version is activated. The partial
-                # unique index allows one active row per modality and is not
+                # unique index allows one active row per role and is not
                 # deferrable, so leaving both updates to a single flush lets
                 # the driver order them the wrong way round and violate it.
                 # Found by running this against a real PostgreSQL; SQLite and
@@ -402,19 +402,19 @@ class PostgresModelRegistry:
             promoted = _row_to_model(row)
         return promoted
 
-    async def rollback(self, modality: Modality) -> ModelVersion:
+    async def rollback(self, role: ModelRole) -> ModelVersion:
         async with unit_of_work(self._factory) as db:
             current = await db.scalar(
                 select(models.ModelVersionRow).where(
-                    models.ModelVersionRow.modality == modality.value,
+                    models.ModelVersionRow.role == role.value,
                     models.ModelVersionRow.is_active.is_(True),
                 )
             )
             if current is None:
-                raise ControlPlaneError(f"no active model for {modality.value}")
+                raise ControlPlaneError(f"no active model for {role.value}")
             if current.rollback_to is None:
                 raise ControlPlaneError(
-                    f"no rollback target recorded for {modality.value}; "
+                    f"no rollback target recorded for {role.value}; "
                     "a promotion without one cannot be undone"
                 )
             target = await db.get(models.ModelVersionRow, current.rollback_to)
@@ -430,13 +430,11 @@ class PostgresModelRegistry:
             restored = _row_to_model(target)
         return restored
 
-    async def list_versions(self, modality: Modality) -> Sequence[ModelVersion]:
+    async def list_versions(self, role: ModelRole) -> Sequence[ModelVersion]:
         async with self._factory() as db:
             rows = (
                 await db.scalars(
-                    select(models.ModelVersionRow).where(
-                        models.ModelVersionRow.modality == modality.value
-                    )
+                    select(models.ModelVersionRow).where(models.ModelVersionRow.role == role.value)
                 )
             ).all()
         return tuple(_row_to_model(row) for row in rows)
@@ -492,7 +490,7 @@ def _row_to_snapshot(row: models.ConfigurationSnapshotRow) -> ConfigurationSnaps
 def _row_to_model(row: models.ModelVersionRow) -> ModelVersion:
     return ModelVersion(
         id=ModelVersionId(row.id),
-        modality=Modality(row.modality),
+        role=ModelRole(row.role),
         artifact_digest=row.artifact_digest,
         dataset_version=row.dataset_version,
         approval=ApprovalState(row.approval),

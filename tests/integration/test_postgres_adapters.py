@@ -47,7 +47,7 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import ModelRole, SemanticVersion
 
 pytestmark = [pytest.mark.integration]
 
@@ -167,6 +167,11 @@ async def test_a_prosody_row_cannot_hold_both_a_value_and_a_reason(
                     value=132.0,
                     unit="Hz",
                     reason="input_gap",
+                    role="prosody_estimator",
+                    model_version="m-1",
+                    taxonomy_version="1.0.0",
+                    configuration_id="c-1",
+                    evidence_ref="e-1",
                 )
             )
 
@@ -185,6 +190,11 @@ async def test_a_prosody_row_cannot_hold_neither(
                     indicator="pitch_mean_hz",
                     start_ms=0,
                     end_ms=1_000,
+                    role="prosody_estimator",
+                    model_version="m-1",
+                    taxonomy_version="1.0.0",
+                    configuration_id="c-1",
+                    evidence_ref="e-1",
                 )
             )
 
@@ -230,6 +240,7 @@ async def test_a_speech_event_cannot_carry_an_invented_role(
                     tolerance_ms=250,
                     confidence=0.9,
                     calibration="calibrated",
+                    role="disfluency_detector",
                     model_version="m-1",
                     taxonomy_version="1.0.0",
                     configuration_id="c-1",
@@ -302,16 +313,21 @@ async def test_a_revoked_key_stops_authenticating(
     assert await directory.authenticate(secret, "trace-2") is None
 
 
-async def test_only_one_model_per_modality_can_be_active(
+async def test_only_one_model_per_role_can_be_active(
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Two would make provenance ambiguous for every event produced (NFR-014)."""
+    """Two would make provenance ambiguous for every event produced (NFR-014).
+
+    Per *role*, not per modality: a recogniser and a disfluency detector are
+    both audio and both active at once, which the modality-keyed index
+    forbade - the exact configuration QA-03 requires for a canary.
+    """
     async with unit_of_work(factory) as db:
         for identifier in ("m-1", "m-2"):
             db.add(
                 models.ModelVersionRow(
                     id=identifier,
-                    modality="audio",
+                    role="recogniser",
                     artifact_digest=f"sha256:{identifier}",
                     dataset_version="v1",
                     approval=ApprovalState.EVALUATED.value,
@@ -333,7 +349,7 @@ async def test_promotion_records_its_rollback_target(
         db.add(
             models.ModelVersionRow(
                 id="m-1",
-                modality="audio",
+                role="recogniser",
                 artifact_digest="sha256:m-1",
                 dataset_version="v1",
                 approval=ApprovalState.PRODUCTION.value,
@@ -344,7 +360,7 @@ async def test_promotion_records_its_rollback_target(
         db.add(
             models.ModelVersionRow(
                 id="m-2",
-                modality="audio",
+                role="recogniser",
                 artifact_digest="sha256:m-2",
                 dataset_version="v2",
                 approval=ApprovalState.EVALUATED.value,
@@ -359,7 +375,7 @@ async def test_promotion_records_its_rollback_target(
     promoted = await registry.promote(ModelVersionId("m-2"), canary_percent=100)
     assert promoted.rollback_to == ModelVersionId("m-1")
 
-    restored = await registry.rollback(Modality.AUDIO)
+    restored = await registry.rollback(ModelRole.RECOGNISER)
     assert restored.id == ModelVersionId("m-1")
 
 
@@ -371,7 +387,7 @@ async def test_an_unevaluated_model_cannot_be_promoted(
         db.add(
             models.ModelVersionRow(
                 id="draft-1",
-                modality="audio",
+                role="recogniser",
                 artifact_digest="sha256:draft",
                 dataset_version="v0",
                 approval=ApprovalState.DRAFT.value,

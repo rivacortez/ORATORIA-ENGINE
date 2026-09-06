@@ -64,6 +64,35 @@ class Modality(StrEnum):
     MULTIMODAL = "multimodal"
 
 
+class ModelRole(StrEnum):
+    """Which *component* produced a piece of evidence.
+
+    The unit of attribution, and it used to be the modality. That resolved the
+    case ADR-010's own example describes - a canary on the visual model must
+    not look like a change in the speech metrics - and left the case inside a
+    modality unexpressible: the recogniser, the disfluency detector, the
+    contextual classifier and the prosody estimator are four audio components,
+    and QA-03 requires the classifier to be canaried while the recogniser stays
+    fixed. A manifest keyed by modality could record one of them; the registry
+    keyed by modality could promote one of them. The other was silently
+    dropped by a ``setdefault``.
+
+    Each role belongs to exactly one modality, derived rather than stored, so
+    QA-02's "which channel failed" question still has an answer and cannot
+    disagree with this one.
+    """
+
+    RECOGNISER = "recogniser"
+    DISFLUENCY_DETECTOR = "disfluency_detector"
+    CONTEXT_CLASSIFIER = "context_classifier"
+    PROSODY_ESTIMATOR = "prosody_estimator"
+    VISUAL_ESTIMATOR = "visual_estimator"
+
+    @property
+    def modality(self) -> Modality:
+        return Modality.VIDEO if self is ModelRole.VISUAL_ESTIMATOR else Modality.AUDIO
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class SemanticVersion:
     """A published, immutable version of a taxonomy, schema or threshold set.
@@ -229,4 +258,19 @@ class Provenance:
     taxonomy_version: SemanticVersion
     configuration: ConfigurationSnapshotId
     evidence_ref: EvidenceRef
+    #: The component that produced this, which is the unit the manifest and
+    #: the registry are keyed by. Required, not defaulted: a default would be
+    #: filled in on exactly the adapters that forgot to say what they are.
+    role: ModelRole
     seed: Seed = Unseeded(UnseededReason.NOT_RECORDED)
+
+    def __post_init__(self) -> None:
+        # `modality` is kept as its own field because QA-02 readers branch on
+        # it and the persisted rows carry it; it is checked against the role so
+        # the two can never disagree, which they otherwise would the first time
+        # an adapter copied a provenance and changed one of them.
+        if self.role.modality is not self.modality:
+            raise ProvenanceViolation(
+                f"role {self.role.value} belongs to modality {self.role.modality.value}, "
+                f"not {self.modality.value}; a record cannot claim both"
+            )

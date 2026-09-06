@@ -131,7 +131,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
     """
         CREATE TABLE model_version (
         	id VARCHAR(64) NOT NULL,
-        	modality VARCHAR(16) NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	artifact_digest VARCHAR(128) NOT NULL,
         	dataset_version VARCHAR(64) NOT NULL,
         	approval VARCHAR(24) NOT NULL,
@@ -142,10 +142,10 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         )
     """,
     """
-        CREATE INDEX ix_model_version_modality ON model_version (modality)
+        CREATE INDEX ix_model_version_role ON model_version (role)
     """,
     """
-        CREATE UNIQUE INDEX uq_model_active_per_modality ON model_version (modality) WHERE is_active IS true
+        CREATE UNIQUE INDEX uq_model_active_per_role ON model_version (role) WHERE is_active IS true
     """,
     """
         CREATE TABLE api_key (
@@ -193,6 +193,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	started_at_ms BIGINT NOT NULL,
         	completed_at_ms BIGINT,
         	completed_stages JSONB NOT NULL,
+        	models JSONB NOT NULL,
         	PRIMARY KEY (id),
         	FOREIGN KEY(session_id) REFERENCES analysis_session (id) ON DELETE CASCADE
         )
@@ -259,6 +260,13 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	calibration VARCHAR(16),
         	reason VARCHAR(40),
         	detail TEXT NOT NULL,
+        	role VARCHAR(32) NOT NULL,
+        	model_version VARCHAR(64) NOT NULL,
+        	taxonomy_version VARCHAR(32) NOT NULL,
+        	configuration_id VARCHAR(64) NOT NULL,
+        	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	PRIMARY KEY (id),
         	CONSTRAINT ck_prosody_measured_xor_unavailable CHECK ((value is not null and unit is not null and reason is null) or (value is null and reason is not null)),
         	FOREIGN KEY(run_id) REFERENCES processing_run (id) ON DELETE CASCADE
@@ -308,6 +316,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	confidence FLOAT NOT NULL,
         	calibration VARCHAR(16) NOT NULL,
         	is_final BOOLEAN NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	model_version VARCHAR(64) NOT NULL,
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
@@ -344,6 +353,7 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	confidence FLOAT NOT NULL,
         	calibration VARCHAR(16) NOT NULL,
         	is_final BOOLEAN NOT NULL,
+        	role VARCHAR(32) NOT NULL,
         	model_version VARCHAR(64) NOT NULL,
         	taxonomy_version VARCHAR(32) NOT NULL,
         	configuration_id VARCHAR(64) NOT NULL,
@@ -382,6 +392,12 @@ CREATE_STATEMENTS: tuple[str, ...] = (
         	calibration VARCHAR(16),
         	confidence_unavailable_reason VARCHAR(64),
         	confidence_unavailable_detail TEXT NOT NULL,
+        	model_version VARCHAR(64) NOT NULL,
+        	taxonomy_version VARCHAR(32) NOT NULL,
+        	configuration_id VARCHAR(64) NOT NULL,
+        	evidence_ref VARCHAR(255) NOT NULL,
+        	seed BIGINT,
+        	seed_reason VARCHAR(40),
         	status VARCHAR(16) NOT NULL,
         	PRIMARY KEY (id),
         	CONSTRAINT ck_token_interval CHECK (start_ms is null or end_ms >= start_ms),

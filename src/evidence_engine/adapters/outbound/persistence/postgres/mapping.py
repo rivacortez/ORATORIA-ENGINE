@@ -41,7 +41,7 @@ from evidence_engine.domain.shared.measurement import (
     Unavailable,
 )
 from evidence_engine.domain.shared.provenance import (
-    Modality,
+    ModelRole,
     Provenance,
     Seed,
     Seeded,
@@ -176,6 +176,7 @@ def token_to_row(token: WordToken, run_id: str, tenant: TenantId) -> models.Word
         sequence_index=token.sequence.index,
         **_placement_columns(token.placement),
         **_confidence_columns(token.confidence),
+        **_provenance_columns(token.provenance),
         status=token.status.value,
     )
 
@@ -264,6 +265,7 @@ def row_to_token(row: models.WordTokenRow) -> WordToken:
         id=TokenId(row.id),
         raw_text=row.raw_text,
         confidence=_confidence_from(row),
+        provenance=_provenance(row, ModelRole.RECOGNISER),
         status=TokenStatus(row.status),
     )
 
@@ -271,6 +273,7 @@ def row_to_token(row: models.WordTokenRow) -> WordToken:
 def speech_event_to_row(event: SpeechEvent, run_id: str, tenant: TenantId) -> models.SpeechEventRow:
     seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.SpeechEventRow(
+        role=event.provenance.role.value,
         id=event.id.value,
         run_id=run_id,
         tenant_id=tenant.value,
@@ -298,7 +301,7 @@ def row_to_speech_event(row: models.SpeechEventRow) -> SpeechEvent:
         type=SpeechEventType(row.type),
         interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
         confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
-        provenance=_provenance(row, Modality.AUDIO),
+        provenance=_provenance(row, ModelRole(row.role)),
         raw_text=row.raw_text,
         context_role=ContextualRole(row.context_role) if row.context_role else None,
         is_final=row.is_final,
@@ -308,6 +311,7 @@ def row_to_speech_event(row: models.SpeechEventRow) -> SpeechEvent:
 def visual_event_to_row(event: VisualEvent, run_id: str, tenant: TenantId) -> models.VisualEventRow:
     seed, seed_reason = seed_to_columns(event.provenance.seed)
     return models.VisualEventRow(
+        role=event.provenance.role.value,
         id=event.id.value,
         run_id=run_id,
         tenant_id=tenant.value,
@@ -335,7 +339,7 @@ def row_to_visual_event(row: models.VisualEventRow) -> VisualEvent:
         type=VisualEventType(row.type),
         interval=Interval.of(row.start_ms, row.end_ms, row.tolerance_ms),
         confidence=Confidence(row.confidence, CalibrationState(row.calibration)),
-        provenance=_provenance(row, Modality.VIDEO),
+        provenance=_provenance(row, ModelRole(row.role)),
         direction=GazeDirection(row.direction) if row.direction else None,
         magnitude=row.magnitude,
         is_final=row.is_final,
@@ -358,6 +362,8 @@ def prosody_to_row(
         indicator=reading.indicator.value,
         start_ms=reading.window.start.ms,
         end_ms=reading.window.end.ms,
+        role=reading.provenance.role.value,
+        **_provenance_columns(reading.provenance),
     )
     if isinstance(reading.value, Measured):
         row.value = reading.value.value
@@ -371,7 +377,15 @@ def prosody_to_row(
     return row
 
 
-def row_to_prosody(row: models.ProsodyReadingRow, provenance: Provenance) -> ProsodyReading:
+def row_to_prosody(row: models.ProsodyReadingRow) -> ProsodyReading:
+    """A reading with its own provenance, read from its own row.
+
+    Readings used to take a `provenance` argument - the run's audio
+    provenance, borrowed from whichever speech event existed, or a
+    fabricated `unknown` when none did. A prosody estimator is a model of
+    its own and its version lives on its rows.
+    """
+    provenance = _provenance(row, ModelRole(row.role))
     window = Interval.of(row.start_ms, row.end_ms)
     if row.value is not None and row.unit is not None:
         return ProsodyReading(
@@ -397,11 +411,31 @@ def row_to_prosody(row: models.ProsodyReadingRow, provenance: Provenance) -> Pro
     )
 
 
+def _provenance_columns(provenance: Provenance) -> dict[str, object]:
+    """The five provenance columns every evidence row carries."""
+    seed, seed_reason = seed_to_columns(provenance.seed)
+    return {
+        "model_version": provenance.model_version.value,
+        "taxonomy_version": str(provenance.taxonomy_version),
+        "configuration_id": provenance.configuration.value,
+        "evidence_ref": provenance.evidence_ref.value,
+        "seed": seed,
+        "seed_reason": seed_reason,
+    }
+
+
 def _provenance(
-    row: models.SpeechEventRow | models.VisualEventRow, modality: Modality
+    row: (
+        models.SpeechEventRow
+        | models.VisualEventRow
+        | models.WordTokenRow
+        | models.ProsodyReadingRow
+    ),
+    role: ModelRole,
 ) -> Provenance:
     return Provenance(
-        modality=modality,
+        modality=role.modality,
+        role=role,
         model_version=ModelVersionId(row.model_version),
         taxonomy_version=SemanticVersion.parse(row.taxonomy_version),
         configuration=ConfigurationSnapshotId(row.configuration_id),

@@ -61,7 +61,7 @@ from evidence_engine.domain.shared.measurement import (
     UnavailabilityReason,
     Unavailable,
 )
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import Modality, ModelRole
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.transcript import transcript as transcript_module
 
@@ -211,14 +211,6 @@ class PostgresEvidenceRepository:
         speech_events = tuple(row_to_speech_event(row) for row in speech_rows)
         visual_events = tuple(row_to_visual_event(row) for row in visual_rows)
 
-        # Prosody rows carry no provenance columns of their own - they inherit
-        # the run's audio provenance, which every speech event on the same run
-        # already records. Duplicating five columns per reading would multiply
-        # the largest table in the schema to say something already known.
-        audio_provenance = (
-            speech_events[0].provenance if speech_events else _synthetic_audio_provenance(run)
-        )
-
         return EvidenceBundle(
             run_id=RunId(run.id),
             session_id=SessionId(run.session_id),
@@ -230,7 +222,7 @@ class PostgresEvidenceRepository:
             ),
             speech_events=speech_events,
             visual_events=visual_events,
-            prosody=tuple(row_to_prosody(row, audio_provenance) for row in prosody_rows),
+            prosody=tuple(row_to_prosody(row) for row in prosody_rows),
             cooccurrences=tuple(_row_to_cooccurrence(row) for row in pair_rows),
         )
 
@@ -378,8 +370,8 @@ def _document_from(row: models.EvidenceDocumentRow, bundle: EvidenceBundle) -> E
             taxonomy_version=SemanticVersion.parse(manifest_json["taxonomy_version"]),
             configuration=ConfigurationSnapshotId(manifest_json["configuration_id"]),
             models={
-                Modality(modality): ModelVersionId(model)
-                for modality, model in manifest_json["models"].items()
+                ModelRole(role): ModelVersionId(model)
+                for role, model in manifest_json["models"].items()
             },
         ),
         transcript=bundle.transcript,
@@ -388,26 +380,4 @@ def _document_from(row: models.EvidenceDocumentRow, bundle: EvidenceBundle) -> E
         visual_events=bundle.visual_events,
         prosody=bundle.prosody,
         cooccurrences=bundle.cooccurrences,
-    )
-
-
-def _synthetic_audio_provenance(run: models.ProcessingRunRow) -> Any:
-    """Provenance for a run that stored prosody but no speech events.
-
-    Rare and real: a session where the recognizer produced measurements but no
-    disfluency crossed a threshold. The run and configuration are known; the
-    model version is not recoverable from the prosody rows alone, so it is
-    named as unknown rather than guessed. NFR-014 is better served by an
-    honest gap than by a plausible-looking wrong value.
-    """
-    from evidence_engine.domain.shared.identifiers import EvidenceRef, ModelVersionId
-    from evidence_engine.domain.shared.provenance import Provenance
-    from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
-
-    return Provenance(
-        modality=Modality.AUDIO,
-        model_version=ModelVersionId("unknown"),
-        taxonomy_version=TAXONOMY_VERSION,
-        configuration=ConfigurationSnapshotId("unknown"),
-        evidence_ref=EvidenceRef(f"audio:{run.id}"),
     )

@@ -76,7 +76,12 @@ from evidence_engine.domain.shared.measurement import (
     UnavailabilityReason,
     Unavailable,
 )
-from evidence_engine.domain.shared.provenance import Modality, Provenance, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Provenance,
+    SemanticVersion,
+)
 from evidence_engine.domain.shared.taxonomy import (
     PROHIBITED_CONCEPTS,
     TAXONOMY_VERSION,
@@ -111,6 +116,7 @@ SCHEMA_VERSION = "1.0.0"
 def audio() -> Provenance:
     return Provenance(
         modality=Modality.AUDIO,
+        role=ModelRole.RECOGNISER,
         model_version=ModelVersionId("asr-baseline-0001"),
         taxonomy_version=TAXONOMY_VERSION,
         configuration=ConfigurationSnapshotId("config-0001"),
@@ -122,6 +128,7 @@ def audio() -> Provenance:
 def video() -> Provenance:
     return Provenance(
         modality=Modality.VIDEO,
+        role=ModelRole.VISUAL_ESTIMATOR,
         model_version=ModelVersionId("vision-baseline-0001"),
         taxonomy_version=TAXONOMY_VERSION,
         configuration=ConfigurationSnapshotId("config-0001"),
@@ -150,6 +157,7 @@ def document(audio: Provenance, video: Provenance) -> EvidenceDocument:
             raw_text="buenos",
             placement=Timed(Interval.of(0, 400)),
             confidence=Confidence.calibrated(0.55),
+            provenance=audio,
             status=TokenStatus.FINAL,
         ),
         WordToken(
@@ -158,6 +166,7 @@ def document(audio: Provenance, video: Provenance) -> EvidenceDocument:
             raw_text="dias",
             placement=Timed(Interval.of(400, 800)),
             confidence=Confidence.calibrated(0.71),
+            provenance=audio,
             status=TokenStatus.FINAL,
         ),
         WordToken(
@@ -166,6 +175,7 @@ def document(audio: Provenance, video: Provenance) -> EvidenceDocument:
             raw_text="este",
             placement=Timed(Interval.of(6_100, 6_500)),
             confidence=Confidence.calibrated(0.94),
+            provenance=audio,
             status=TokenStatus.FINAL,
         ),
     ]

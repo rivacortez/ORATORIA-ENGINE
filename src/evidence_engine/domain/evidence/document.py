@@ -46,7 +46,7 @@ from evidence_engine.domain.shared.identifiers import (
     RunId,
     SessionId,
 )
-from evidence_engine.domain.shared.provenance import Modality, SemanticVersion
+from evidence_engine.domain.shared.provenance import Modality, ModelRole, SemanticVersion
 from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
@@ -147,17 +147,23 @@ _EXEMPT_RESULT_KEYS: Final[frozenset[str]] = frozenset(
 class ProvenanceManifest:
     """Which versions produced this document (NFR-014, NFR-015, US-008).
 
-    Every model that contributed is listed by modality, so a reader can tell
-    which half of a result changed when a single runtime is promoted. Without
-    that split, a canary on the visual model would appear to have moved the
-    speech metrics too.
+    Every model that contributed is listed **by role** - recogniser, detector,
+    classifier, prosody, visual - so a reader can tell which component changed
+    when a single one is promoted. Keyed by modality, as it was, the manifest
+    could hold one audio model: a canary on the contextual classifier while
+    the recogniser stayed fixed recorded one of the two and silently dropped
+    the other, which is the exact case QA-03 exists to make visible.
+
+    The recogniser is always present when there is a transcript. It used to be
+    present only when some *event* had been derived from its output, so a
+    document with recognised words and no disfluencies carried ``models: {}``.
     """
 
     pipeline_version: SemanticVersion
     schema_version: SemanticVersion
     taxonomy_version: SemanticVersion
     configuration: ConfigurationSnapshotId
-    models: Mapping[Modality, ModelVersionId]
+    models: Mapping[ModelRole, ModelVersionId]
 
     def __post_init__(self) -> None:
         if self.taxonomy_version != TAXONOMY_VERSION:

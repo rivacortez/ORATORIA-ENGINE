@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 
 from evidence_engine.adapters.inbound.rest.dependencies import EngineDep
 from evidence_engine.adapters.inbound.rest.schemas import HealthBody
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import ModelRole
 
 router = APIRouter(tags=["health"])
 
@@ -36,16 +36,27 @@ async def live() -> HealthBody:
 async def ready(engine: EngineDep) -> JSONResponse:
     checks: dict[str, str] = {}
 
-    for modality in (Modality.AUDIO, Modality.VIDEO):
+    # Readiness answers "do the components this deployment WIRED resolve?",
+    # not "is every role in the enum filled?". A recogniser-only deployment
+    # is ready for what it does; the roles it does not have are *reported*
+    # as absent rather than failing the probe - `/v1/capabilities` is where
+    # a consumer learns what will not arrive. The first version iterated the
+    # whole enum and returned 503 for every build that had no contextual
+    # classifier, which is every build there is.
+    wired = {**engine.speech.contributions, **engine.vision.contributions}
+    for role in ModelRole:
+        if role not in wired:
+            checks[f"model:{role.value}"] = "absent (not wired in this deployment)"
+            continue
         try:
-            version = await engine.registry.active_for(modality)
+            version = await engine.registry.active_for(role)
         except Exception as failure:
             # A readiness probe that raises returns a 500 with a stack trace
             # instead of a diagnosis, and the orchestrator learns nothing about
             # which component is missing.
-            checks[f"model:{modality.value}"] = f"unavailable ({type(failure).__name__})"
+            checks[f"model:{role.value}"] = f"unavailable ({type(failure).__name__})"
         else:
-            checks[f"model:{modality.value}"] = f"ready ({version.id.value})"
+            checks[f"model:{role.value}"] = f"ready ({version.id.value})"
 
     checks["backend"] = engine.profile.backend
     checks["runtime_mode"] = engine.profile.runtime_mode

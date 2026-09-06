@@ -25,8 +25,15 @@ import pytest
 
 from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.errors import FabricatedValue
-from evidence_engine.domain.shared.identifiers import TokenId
+from evidence_engine.domain.shared.identifiers import (
+    ConfigurationSnapshotId,
+    EvidenceRef,
+    ModelVersionId,
+    TokenId,
+)
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.provenance import Modality, ModelRole, Provenance
+from evidence_engine.domain.shared.taxonomy import TAXONOMY_VERSION
 from evidence_engine.domain.shared.timeline import Interval, MonotonicTime
 from evidence_engine.domain.transcript import transcript as transcript_module
 from evidence_engine.domain.transcript.tokens import (
@@ -41,6 +48,19 @@ from evidence_engine.domain.transcript.tokens import (
 pytestmark = pytest.mark.invariant
 
 
+#: The recogniser's provenance, shared by every token these tests build. A
+#: token carries one now - it was the only evidence that did not - and the
+#: domain refuses any role but the recogniser's on a word.
+RECOGNISER = Provenance(
+    modality=Modality.AUDIO,
+    role=ModelRole.RECOGNISER,
+    model_version=ModelVersionId("test-recogniser-v1"),
+    taxonomy_version=TAXONOMY_VERSION,
+    configuration=ConfigurationSnapshotId("config-test"),
+    evidence_ref=EvidenceRef("audio:test"),
+)
+
+
 def placed(text: str, start: int, end: int, index: int) -> WordToken:
     return WordToken(
         id=TokenId(f"tok-{index}"),
@@ -48,6 +68,7 @@ def placed(text: str, start: int, end: int, index: int) -> WordToken:
         raw_text=text,
         placement=Timed(Interval.of(start, end)),
         confidence=Confidence.calibrated(0.9),
+        provenance=RECOGNISER,
     )
 
 
@@ -58,6 +79,7 @@ def unplaced(text: str, index: int) -> WordToken:
         raw_text=text,
         placement=AlignmentUnavailable(detail="the alignment heads returned no interval"),
         confidence=Unavailable(reason=UnavailabilityReason.POSTERIOR_NOT_REPORTED),
+        provenance=RECOGNISER,
     )
 
 

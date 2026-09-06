@@ -212,11 +212,14 @@ class OratoriaEngine:
             token_minter=HmacStreamTokenMinter(configuration.stream_signing_key),
         )
         self._capture = CaptureControl(sessions=self._sessions, clock=self._clock)
+        # `contributions` is completed at warmup, once the speech runtime
+        # exists; until then the run would record only the vision model.
         self._open_run = OpenProcessingRun(
             sessions=self._sessions,
             runs=self._runs,
             clock=self._clock,
             pipeline_version=configuration.pipeline_version,
+            contributions=dict(vision.contributions),
         )
         self._close_run = CloseProcessingRun(runs=self._runs, clock=self._clock)
         self._complete = CompleteSession(
@@ -276,6 +279,15 @@ class OratoriaEngine:
             return
         if self._speech is None:
             self._speech = self._configuration.build_speech_runtime()
+        # The run records what is wired, by role, from the moment it opens -
+        # and the speech runtime is only known now.
+        self._open_run = OpenProcessingRun(
+            sessions=self._sessions,
+            runs=self._runs,
+            clock=self._clock,
+            pipeline_version=self._configuration.pipeline_version,
+            contributions={**self._speech.contributions, **self._vision.contributions},
+        )
         try:
             await self._speech.transcribe(_silent_window(self._configuration.sample_rate_hz))
         except Exception as error:

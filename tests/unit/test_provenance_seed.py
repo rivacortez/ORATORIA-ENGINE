@@ -44,6 +44,7 @@ from evidence_engine.domain.shared.identifiers import (
 from evidence_engine.domain.shared.provenance import (
     MAX_SEED,
     Modality,
+    ModelRole,
     Provenance,
     ProvenanceViolation,
     Seeded,
@@ -65,6 +66,7 @@ SEEDED_TABLES = ("speech_event", "visual_event", "configuration_snapshot")
 def _provenance(seed: Seeded | Unseeded | None = None) -> Provenance:
     fields = {
         "modality": Modality.AUDIO,
+        "role": ModelRole.RECOGNISER,
         "model_version": ModelVersionId("asr-baseline-0001"),
         "taxonomy_version": TAXONOMY_VERSION,
         "configuration": ConfigurationSnapshotId("config-0001"),

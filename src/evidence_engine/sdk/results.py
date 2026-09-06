@@ -137,6 +137,8 @@ class Word:
     text: str
     placement: WordPlacement
     confidence: WordConfidence
+    #: Which recogniser produced this word (NFR-014).
+    model_version: str
     #: ``provisional`` or ``final``. A final word will not be revised.
     status: str
 
@@ -197,7 +199,14 @@ class ProsodyReading:
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
-    """What produced this result. NFR-014's provenance, on the public surface."""
+    """What produced this result. NFR-014's provenance, on the public surface.
+
+    ``models`` is keyed by **role** - ``recogniser``, ``disfluency_detector``,
+    ``context_classifier``, ``prosody_estimator``, ``visual_estimator`` - so a
+    consumer can see which component changed between two runs. A map keyed
+    by modality held one audio model and could not show a detector being
+    canaried beside a fixed recogniser.
+    """
 
     pipeline_version: str
     schema_version: str
@@ -267,6 +276,7 @@ def _word(token: WordToken) -> Word:
         text=token.raw_text,
         placement=placement,
         confidence=_confidence(token.confidence),
+        model_version=token.provenance.model_version.value,
         status=token.status.value,
     )
 
@@ -333,9 +343,7 @@ def evidence_from(document: EvidenceDocument) -> Evidence:
             schema_version=str(document.manifest.schema_version),
             taxonomy_version=str(document.manifest.taxonomy_version),
             configuration_id=document.manifest.configuration.value,
-            models={
-                modality.value: model.value for modality, model in document.manifest.models.items()
-            },
+            models={role.value: model.value for role, model in document.manifest.models.items()},
         ),
         transcript=_transcript(document.transcript),
         speech_events=tuple(_speech_event(e) for e in document.speech_events),

@@ -36,6 +36,7 @@ from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.errors import DomainError, FabricatedValue
 from evidence_engine.domain.shared.identifiers import TokenId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.provenance import ModelRole, Provenance
 from evidence_engine.domain.shared.timeline import Interval
 
 
@@ -153,9 +154,22 @@ class WordToken:
     #: unavailable confidence clears no publication threshold, for the same
     #: reason an uncalibrated one does not: there is nothing to compare.
     confidence: Confidence | Unavailable
+    #: Which recogniser produced this word. Events and prosody readings have
+    #: carried a full `Provenance` from the start; tokens - the evidence that
+    #: constitutes the verbatim record, driver 1 - carried none at any layer,
+    #: so the recogniser's version reached the manifest only if some *event*
+    #: happened to be derived from its output. With a runtime that emits no
+    #: events, it never did.
+    provenance: Provenance
     status: TokenStatus = TokenStatus.PROVISIONAL
 
     def __post_init__(self) -> None:
+        if self.provenance.role is not ModelRole.RECOGNISER:
+            raise TranscriptViolation(
+                f"a word token is produced by the recogniser, not by "
+                f"{self.provenance.role.value}; a token attributed to a detector would "
+                "be a word that no model heard"
+            )
         if not self.raw_text:
             raise TranscriptViolation(
                 "a word token cannot be empty; an unintelligible stretch is an "
@@ -222,5 +236,6 @@ class WordToken:
             raw_text=self.raw_text if raw_text is None else raw_text,
             placement=self.placement if placement is None else placement,
             confidence=self.confidence if confidence is None else confidence,
+            provenance=self.provenance,
             status=self.status if status is None else status,
         )

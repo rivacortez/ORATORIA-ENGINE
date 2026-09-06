@@ -43,7 +43,7 @@ from evidence_engine.domain.quality.assessment import (
 from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.identifiers import EvidenceRef, RunId
 from evidence_engine.domain.shared.measurement import Measured, UnavailabilityReason
-from evidence_engine.domain.shared.provenance import Modality, Provenance
+from evidence_engine.domain.shared.provenance import Modality, ModelRole, Provenance
 from evidence_engine.domain.shared.taxonomy import VisualEventType
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.visual_events.events import (
@@ -121,6 +121,7 @@ class VisualAssembler:
     def _provenance(self, result: VisualResult) -> Provenance:
         return Provenance(
             modality=Modality.VIDEO,
+            role=ModelRole.VISUAL_ESTIMATOR,
             model_version=result.model_version,
             taxonomy_version=self._configuration.taxonomy_version,
             configuration=self._configuration.id,

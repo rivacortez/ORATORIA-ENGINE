@@ -15,7 +15,7 @@ comparable instead of letting the second overwrite the first.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -26,11 +26,12 @@ from evidence_engine.domain.quality.assessment import QualityReport
 from evidence_engine.domain.sessions.session import AnalysisSession
 from evidence_engine.domain.shared.identifiers import (
     ApplicationId,
+    ModelVersionId,
     RunId,
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import SemanticVersion
+from evidence_engine.domain.shared.provenance import ModelRole, SemanticVersion
 from evidence_engine.domain.speech_events.events import SpeechEvent
 from evidence_engine.domain.speech_events.prosody import ProsodyReading
 from evidence_engine.domain.transcript.transcript import Transcript
@@ -59,6 +60,12 @@ class ProcessingRun:
     #: Stages already finished, for NFR-019: an interrupted batch job resumes
     #: from completed idempotent stages instead of restarting the pipeline.
     completed_stages: tuple[str, ...] = field(default_factory=tuple)
+    #: The model versions wired when the run opened, by role. The manifest on
+    #: the document says what *contributed*; this says what was *running*. A
+    #: run that failed before producing evidence used to leave no record of
+    #: which model it attempted, and NFR-019 cannot resume a run it cannot
+    #: describe.
+    models: Mapping[ModelRole, ModelVersionId] = field(default_factory=dict)
 
 
 class SessionRepository(Protocol):

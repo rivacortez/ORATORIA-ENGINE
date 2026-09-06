@@ -26,7 +26,7 @@ that is six times too long is indistinguishable from a speaker who paused.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -34,6 +34,7 @@ from evidence_engine.domain.sessions.capabilities import SUPPORTED_SAMPLE_RATES_
 from evidence_engine.domain.shared.errors import FabricatedValue
 from evidence_engine.domain.shared.identifiers import ModelVersionId
 from evidence_engine.domain.shared.measurement import UnavailabilityReason, Unavailable
+from evidence_engine.domain.shared.provenance import ModelRole
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
     ProsodicIndicator,
@@ -243,6 +244,12 @@ class SpeechEventHypothesis:
     score: float
     raw_text: str = ""
     context_role: ContextualRole | None = None
+    #: Which component produced this hypothesis. The assembler looks the
+    #: version up in `SpeechResult.contributions` by this key and refuses a
+    #: role the result did not declare - attributing a detector's event to
+    #: the recogniser because the detector forgot to say its name is the
+    #: silent substitution the whole provenance model exists to prevent.
+    role: ModelRole = ModelRole.DISFLUENCY_DETECTOR
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,13 +267,24 @@ class ProsodyHypothesis:
     end_ms: int
     value: float | None
     score: float = 0.0
+    role: ModelRole = ModelRole.PROSODY_ESTIMATOR
 
 
 @dataclass(frozen=True, slots=True)
 class SpeechResult:
-    """Everything one speech runtime produced for one window."""
+    """Everything one speech runtime produced for one window.
 
-    model_version: ModelVersionId
+    ``contributions`` names every component that produced part of this
+    result, by role. A pure recogniser declares one entry; a runtime that
+    also runs a detector and a prosody estimator declares three. It replaced
+    a single ``model_version`` because one version per result could only
+    attribute one component, and a manifest keyed by modality then dropped
+    the others with a ``setdefault``. Words are always the recogniser's;
+    every other hypothesis names its role and the assembler refuses one
+    that was not declared here.
+    """
+
+    contributions: Mapping[ModelRole, ModelVersionId]
     #: Where the window this describes began on the session clock. Carried so a
     #: stateless assembler can build a session-global token sequence from a
     #: per-window emission index without being told the window separately -
@@ -280,6 +298,18 @@ class SpeechResult:
     #: §6.1 step 9 makes finalization irreversible, so the runtime - not a
     #: fixed lag constant - decides when it is safe.
     stable_through_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if ModelRole.RECOGNISER not in self.contributions:
+            raise ValueError(
+                "a speech result must name its recogniser in `contributions`; "
+                "words with no attributable model are the gap NFR-014 forbids"
+            )
+
+    @property
+    def model_version(self) -> ModelVersionId:
+        """The recogniser's version - what every word is attributed to."""
+        return self.contributions[ModelRole.RECOGNISER]
 
 
 class SpeechRuntime(Protocol):
@@ -299,6 +329,13 @@ class SpeechRuntime(Protocol):
     emitted_prosody: frozenset[ProsodicIndicator]
     #: One sentence a consumer can read about why the rest is absent.
     capability_detail: str
+
+    #: The versions this runtime will stamp on its results, by role. Declared
+    #: on the runtime and not only on each result so the processing run can
+    #: record what was wired *before* the first window: a run that fails on
+    #: window one still has to say which model it was running.
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]: ...
 
     async def transcribe(self, window: AudioWindow) -> SpeechResult:
         """Produce hypotheses for one window.
@@ -358,9 +395,17 @@ class VisualQualitySignal:
 class VisualResult:
     """Everything one vision runtime produced for a batch of frames."""
 
-    model_version: ModelVersionId
+    contributions: Mapping[ModelRole, ModelVersionId]
     events: tuple[VisualEventHypothesis, ...] = field(default_factory=tuple)
     quality: tuple[VisualQualitySignal, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if ModelRole.VISUAL_ESTIMATOR not in self.contributions:
+            raise ValueError("a visual result must name its estimator in `contributions`")
+
+    @property
+    def model_version(self) -> ModelVersionId:
+        return self.contributions[ModelRole.VISUAL_ESTIMATOR]
 
 
 class VisionRuntime(Protocol):
@@ -370,6 +415,9 @@ class VisionRuntime(Protocol):
     emitted_visual_events: frozenset[VisualEventType]
     #: One sentence a consumer can read about why the rest is absent.
     capability_detail: str
+
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]: ...
 
     async def observe(self, frames: Sequence[VisualFrame]) -> VisualResult:
         """Produce hypotheses and quality signals for a batch of frames.

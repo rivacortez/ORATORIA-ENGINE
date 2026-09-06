@@ -64,9 +64,16 @@ from evidence_engine.domain.sessions.session import AnalysisSession
 from evidence_engine.domain.shared.confidence import Confidence
 from evidence_engine.domain.shared.identifiers import ModelVersionId, SessionId
 from evidence_engine.domain.shared.measurement import Measured
-from evidence_engine.domain.shared.provenance import Modality
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Provenance,
+    ProvenanceViolation,
+)
 from evidence_engine.domain.shared.timeline import Interval
 from evidence_engine.domain.speech_events.events import SpeechEvent
+from evidence_engine.domain.speech_events.prosody import ProsodyReading
+from evidence_engine.domain.transcript.transcript import Transcript
 from evidence_engine.domain.visual_events.events import VisualEvent
 
 
@@ -142,7 +149,9 @@ class CompleteSession:
                 schema_version=configuration.schema_version,
                 taxonomy_version=configuration.taxonomy_version,
                 configuration=configuration.id,
-                models=_models_used(speech_events, visual_events),
+                models=_models_used(
+                    state.transcript, speech_events, visual_events, tuple(state.prosody)
+                ),
             ),
             transcript=bundle.transcript,
             quality=bundle.quality,
@@ -251,20 +260,54 @@ def _loss_ratio(missing: int, highest_seen: int) -> float:
 
 
 def _models_used(
-    speech_events: tuple[SpeechEvent, ...], visual_events: tuple[VisualEvent, ...]
-) -> dict[Modality, ModelVersionId]:
-    """Collect the model version each modality actually contributed under.
+    transcript: Transcript,
+    speech_events: tuple[SpeechEvent, ...],
+    visual_events: tuple[VisualEvent, ...],
+    prosody: tuple[ProsodyReading, ...],
+) -> dict[ModelRole, ModelVersionId]:
+    """Collect the model version each *role* actually contributed under.
 
-    Read off the events rather than from the registry, because during a canary
-    the registry's answer and the answer for *these* events differ - and
-    NFR-014 is about these events.
+    Read off the evidence rather than from the registry, because during a
+    canary the registry's answer and the answer for *this* evidence differ -
+    and NFR-014 is about this evidence.
+
+    Three things this used to get wrong, each of which produced a manifest
+    that read as complete.
+
+    *It read events only.* Tokens carried no provenance and prosody was
+    never consulted, so a run that produced a transcript and no disfluency
+    recorded no model at all: `models: {}` on five recognised words.
+
+    *It was keyed by modality.* One audio model could be recorded. The
+    contextual classifier QA-03 requires to be canaried independently of
+    the recogniser had nowhere to go.
+
+    *It used `setdefault`.* The second model in a modality was dropped
+    without a trace. Now two versions for one role in one run is refused:
+    a canary is *between* runs, and within a run it is a bug that would
+    otherwise be recorded as whichever happened to come first.
     """
-    # Iterated separately rather than as one concatenated sequence: the two
-    # event types share no base beyond `object`, so a merged loop would erase
-    # the very `provenance` attribute this function reads.
-    models: dict[Modality, ModelVersionId] = {}
+    models: dict[ModelRole, ModelVersionId] = {}
+
+    def note(provenance: Provenance) -> None:
+        seen = models.get(provenance.role)
+        if seen is not None and seen != provenance.model_version:
+            raise ProvenanceViolation(
+                f"two versions of {provenance.role.value} in one run: {seen.value} and "
+                f"{provenance.model_version.value}. A canary runs between sessions, "
+                "not inside one; this document cannot say which model produced what"
+            )
+        models[provenance.role] = provenance.model_version
+
+    # Iterated separately rather than as one concatenated sequence: the
+    # types share no base beyond `object`, so a merged loop would erase the
+    # very `provenance` attribute this function reads.
+    for token in transcript.tokens:
+        note(token.provenance)
     for speech_event in speech_events:
-        models.setdefault(speech_event.provenance.modality, speech_event.provenance.model_version)
+        note(speech_event.provenance)
     for visual_event in visual_events:
-        models.setdefault(visual_event.provenance.modality, visual_event.provenance.model_version)
+        note(visual_event.provenance)
+    for reading in prosody:
+        note(reading.provenance)
     return models

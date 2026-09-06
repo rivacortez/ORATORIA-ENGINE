@@ -48,6 +48,7 @@ from evidence_engine.adapters.outbound.model_runtime.deterministic import (
 )
 from evidence_engine.adapters.outbound.telemetry.clock import FrozenClock
 from evidence_engine.domain.shared.identifiers import ModelVersionId
+from evidence_engine.domain.shared.provenance import ModelRole
 
 #: A script both engines replay. Deterministic by construction, which is what
 #: makes a conformance comparison meaningful at all: any difference between the
@@ -233,6 +234,10 @@ class _CountingRuntime:
     emitted_prosody: frozenset[object] = frozenset()
     capability_detail = "counting"
 
+    @property
+    def contributions(self) -> dict[ModelRole, ModelVersionId]:
+        return {ModelRole.RECOGNISER: ModelVersionId("counting-v1")}
+
     def __init__(self) -> None:
         self.calls = 0
         self._inner = None
@@ -241,7 +246,7 @@ class _CountingRuntime:
         from evidence_engine.application.ports.runtimes import SpeechResult
 
         self.calls += 1
-        return SpeechResult(model_version=ModelVersionId("counting-v1"))
+        return SpeechResult(contributions=self.contributions)
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +599,10 @@ def _unscored() -> object:
         emitted_prosody: frozenset[object] = frozenset()
         capability_detail = "no posterior, one unaligned word"
 
+        @property
+        def contributions(self) -> dict[ModelRole, ModelVersionId]:
+            return {ModelRole.RECOGNISER: ModelVersionId("unscored-v1")}
+
         async def transcribe(self, window: object) -> object:
             # Re-emits the same two words on every call, because a streaming
             # runtime emits its whole *active region* rather than only what is
@@ -603,7 +612,7 @@ def _unscored() -> object:
             # exactly that and the words vanished - the same failure
             # `deterministic.py` documents from the first end-to-end run.
             return SpeechResult(
-                model_version=ModelVersionId("unscored-v1"),
+                contributions=self.contributions,
                 window_position_ms=0,
                 words=(
                     TimedWordHypothesis(

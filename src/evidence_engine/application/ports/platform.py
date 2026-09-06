@@ -25,7 +25,12 @@ from evidence_engine.domain.shared.identifiers import (
     SessionId,
     TenantId,
 )
-from evidence_engine.domain.shared.provenance import Modality, Seed, SemanticVersion
+from evidence_engine.domain.shared.provenance import (
+    Modality,
+    ModelRole,
+    Seed,
+    SemanticVersion,
+)
 from evidence_engine.domain.visual_events.calibration import VisualCalibration
 
 # ---------------------------------------------------------------------------
@@ -293,7 +298,12 @@ class ModelVersion:
     """§8 ``ModelVersion``: an artifact and everything needed to trust it."""
 
     id: ModelVersionId
-    modality: Modality
+    #: The component this artifact fills. Registry, promotion, canary and
+    #: rollback are keyed by this. They were keyed by modality, which allowed
+    #: one active audio model - and QA-03 requires the contextual classifier
+    #: to be canaried while the recogniser stays fixed, which a
+    #: modality-keyed registry cannot even express.
+    role: ModelRole
     artifact_digest: str
     dataset_version: str
     approval: ApprovalState
@@ -304,11 +314,15 @@ class ModelVersion:
     #: minutes, which is only possible if the target was decided in advance.
     rollback_to: ModelVersionId | None = None
 
+    @property
+    def modality(self) -> Modality:
+        return self.role.modality
+
 
 class ModelRegistry(Protocol):
     """Lineage, approval and traffic routing for model artifacts."""
 
-    async def active_for(self, modality: Modality) -> ModelVersion:
+    async def active_for(self, role: ModelRole) -> ModelVersion:
         """The version that should serve the next request for this modality."""
         ...
 
@@ -323,11 +337,11 @@ class ModelRegistry(Protocol):
         """
         ...
 
-    async def rollback(self, modality: Modality) -> ModelVersion:
+    async def rollback(self, role: ModelRole) -> ModelVersion:
         """Return to the recorded fallback without changing any schema."""
         ...
 
-    async def list_versions(self, modality: Modality) -> Sequence[ModelVersion]: ...
+    async def list_versions(self, role: ModelRole) -> Sequence[ModelVersion]: ...
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,15 @@ its model version, taxonomy version, configuration snapshot and evidence
 reference. During a canary two versions answer at once, so reading the version
 from deployment config would be wrong for exactly the traffic that matters most.
 
+**Amended 2026-09-05 - the unit of attribution is the component.** Provenance
+names a `ModelRole` (recogniser, disfluency detector, context classifier,
+prosody estimator, visual estimator); the manifest maps role to version; the
+registry activates, promotes and rolls back **per role**. Keyed by modality, as
+it was, "canary a classifier" and "replace the recogniser" were the same
+operation and a manifest could hold one audio model - the scenario above could
+not be recorded, let alone rolled back. Two versions of one role inside a
+single run is refused, not recorded. See `docs/BUILD_RECORD.md` §3.20.
+
 **Only evaluated artifacts are promotable.** The registry refuses anything not
 in `EVALUATED` or `APPROVED`.
 

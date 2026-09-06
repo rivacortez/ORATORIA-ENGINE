@@ -21,7 +21,7 @@ than an outage in production.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from evidence_engine.application.ports.runtimes import (
@@ -36,6 +36,7 @@ from evidence_engine.application.ports.runtimes import (
     VisualResult,
 )
 from evidence_engine.domain.shared.identifiers import ModelVersionId
+from evidence_engine.domain.shared.provenance import ModelRole
 from evidence_engine.domain.shared.taxonomy import (
     ContextualRole,
     ProsodicIndicator,
@@ -111,6 +112,29 @@ class DeterministicSpeechRuntime:
     emitted_prosody: frozenset[ProsodicIndicator] = frozenset(ProsodicIndicator)
     capability_detail = "a scripted runtime emits whatever its script declares"
 
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]:
+        """One script plays every audio role.
+
+        Declared explicitly rather than inferred, because a scripted event
+        with a role the runtime had not declared would be refused by the
+        assembler - and a script is the one place where playing three
+        components under one version is the truth rather than a shortcut.
+        """
+        # Three components, three versions - even though one script backs
+        # them all. `ModelVersion` has one role, and the registry keys stored
+        # versions by id: one id under three roles would overwrite the role
+        # twice and leave two components registered as something they are
+        # not. Deriving the ids from the script's version keeps a scripted
+        # run reproducible and keeps the recogniser's id exactly what every
+        # existing test and manifest expects.
+        version = self._script.model_version
+        return {
+            ModelRole.RECOGNISER: version,
+            ModelRole.DISFLUENCY_DETECTOR: ModelVersionId(f"{version.value}-detector"),
+            ModelRole.PROSODY_ESTIMATOR: ModelVersionId(f"{version.value}-prosody"),
+        }
+
     def __init__(self, script: SpeechScript) -> None:
         self._script = script
         self._windows_seen = 0
@@ -164,7 +188,7 @@ class DeterministicSpeechRuntime:
         self._stable_ms = max(self._stable_ms, stable_through_ms)
 
         return SpeechResult(
-            model_version=self._script.model_version,
+            contributions=self.contributions,
             window_position_ms=window.session_position_ms,
             words=words,
             events=events,
@@ -245,6 +269,10 @@ class DeterministicVisionRuntime:
     emitted_visual_events: frozenset[VisualEventType] = frozenset(VisualEventType)
     capability_detail = "a scripted runtime emits whatever its script declares"
 
+    @property
+    def contributions(self) -> Mapping[ModelRole, ModelVersionId]:
+        return {ModelRole.VISUAL_ESTIMATOR: self._script.model_version}
+
     def __init__(self, script: VisualScript) -> None:
         self._script = script
         self._batches_seen = 0
@@ -258,7 +286,7 @@ class DeterministicVisionRuntime:
             raise RuntimeError("scripted vision runtime failure")
 
         if not frames:
-            return VisualResult(model_version=self._script.model_version)
+            return VisualResult(contributions=self.contributions)
 
         start_ms = min(frame.session_position_ms for frame in frames)
         end_ms = max(frame.session_position_ms for frame in frames) + 1
@@ -277,7 +305,7 @@ class DeterministicVisionRuntime:
         )
 
         return VisualResult(
-            model_version=self._script.model_version,
+            contributions=self.contributions,
             events=events,
             quality=(
                 VisualQualitySignal(

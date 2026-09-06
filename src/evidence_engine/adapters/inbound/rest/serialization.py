@@ -42,9 +42,10 @@ def render_document(document: EvidenceDocument, *, schema_version: str) -> dict[
             "schema_version": str(document.manifest.schema_version),
             "taxonomy_version": str(document.manifest.taxonomy_version),
             "configuration_id": document.manifest.configuration.value,
-            "models": {
-                modality.value: model.value for modality, model in document.manifest.models.items()
-            },
+            # Keyed by *role* - recogniser, disfluency_detector, prosody_estimator,
+            # visual_estimator - not by modality. One audio entry could not
+            # express a detector canaried beside a fixed recogniser (QA-03).
+            "models": {role.value: model.value for role, model in document.manifest.models.items()},
         },
         "transcript": render_transcript(document.transcript),
         "speech_events": [render_speech_event(e) for e in document.speech_events],
@@ -81,6 +82,8 @@ def render_transcript(transcript: Transcript) -> dict[str, Any]:
                 "id": token.id.value,
                 "sequence": list(token.sequence.key),
                 "raw_text": token.raw_text,
+                # NFR-014 on the word itself: which recogniser produced it.
+                "model_version": token.provenance.model_version.value,
                 **_render_placement(token.placement),
                 **_render_token_confidence(token.confidence),
                 "status": token.status.value,

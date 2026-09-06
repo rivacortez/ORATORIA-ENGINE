@@ -14,7 +14,7 @@ this port?" stops having an answer you can read.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -130,7 +130,7 @@ from evidence_engine.domain.shared.identifiers import (
     TenantId,
 )
 from evidence_engine.domain.shared.provenance import (
-    Modality,
+    ModelRole,
     SemanticVersion,
     Unseeded,
     UnseededReason,
@@ -372,6 +372,7 @@ def build_container(
             runs=runs,
             clock=resolved_clock,
             pipeline_version=PIPELINE_VERSION,
+            contributions={**speech.contributions, **vision.contributions},
         ),
         close_run=CloseProcessingRun(runs=runs, clock=resolved_clock),
         complete_session=CompleteSession(
@@ -443,21 +444,13 @@ def _build_runtimes(
             )
         )
         vision = DeterministicVisionRuntime(visual_script or VisualScript())
-        _register_versions(
-            registry,
-            (Modality.AUDIO, speech.model_version),
-            (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
-        )
+        _register_versions(registry, speech.contributions, vision.contributions)
         return speech, vision
 
     speech = DeterministicSpeechRuntime(speech_script or SpeechScript())
     vision = DeterministicVisionRuntime(visual_script or VisualScript())
 
-    _register_versions(
-        registry,
-        (Modality.AUDIO, ModelVersionId("deterministic-speech-v1")),
-        (Modality.VIDEO, ModelVersionId("deterministic-vision-v1")),
-    )
+    _register_versions(registry, speech.contributions, vision.contributions)
     return speech, vision
 
 
@@ -496,12 +489,20 @@ def _register_the_bootstrap_key(
     )
 
 
-def _register_versions(registry: ModelRegistry, *versions: tuple[Modality, ModelVersionId]) -> None:
+def _register_versions(
+    registry: ModelRegistry, *contributions: Mapping[ModelRole, ModelVersionId]
+) -> None:
     """Make the versions resolvable so NFR-014's provenance is not a dangling id.
 
     A runtime that produced evidence is a version, whether it replayed a script
     or ran a checkpoint, and a result that could not name the version that made
     it would be untraceable in exactly the runs meant to be most reproducible.
+
+    Registered **by role**. Each runtime declares what it contributes - a
+    recogniser, a detector, a prosody estimator, a visual estimator - and each
+    becomes its own active entry, so the registry can promote or roll back one
+    component while the others stay fixed. Keyed by modality, as this was, one
+    audio entry stood for every audio component.
     """
     if not isinstance(registry, InMemoryModelRegistry):
         # The persistent registry is seeded by a migration or an administrative
@@ -509,21 +510,22 @@ def _register_versions(registry: ModelRegistry, *versions: tuple[Modality, Model
         # silently reintroduce a version an administrator had just disabled.
         return
 
-    for modality, model_id in versions:
-        registry.register(
-            ModelVersion(
-                id=model_id,
-                modality=modality,
-                # A digest the registry can hold. For the deterministic
-                # runtimes there is no artifact; for the managed one the real
-                # weights digest is in `BASELINE_PINS.md` and belongs there
-                # rather than being re-derived at boot, because a mismatch
-                # should be caught by the pin check and not by a service that
-                # has already started.
-                artifact_digest=f"sha256:{model_id.value}",
-                dataset_version="none",
-                approval=ApprovalState.EVALUATED,
-                metrics={},
-            ),
-            make_active=True,
-        )
+    for contribution in contributions:
+        for role, model_id in contribution.items():
+            registry.register(
+                ModelVersion(
+                    id=model_id,
+                    role=role,
+                    # A digest the registry can hold. For the deterministic
+                    # runtimes there is no artifact; for the baseline the real
+                    # weights digest is in `BASELINE_PINS.md` and belongs there
+                    # rather than being re-derived at boot, because a mismatch
+                    # should be caught by the pin check and not by a service
+                    # that has already started.
+                    artifact_digest=f"sha256:{model_id.value}",
+                    dataset_version="none",
+                    approval=ApprovalState.EVALUATED,
+                    metrics={},
+                ),
+                make_active=True,
+            )

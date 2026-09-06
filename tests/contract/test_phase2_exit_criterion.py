@@ -160,7 +160,11 @@ def test_a_synthetic_session_streams_completes_is_queried_and_is_deleted(
     assert document["ranking_authority"] == "none"
     assert document["transcript"]["raw_text"].startswith("buenos dias")
     assert document["manifest"]["taxonomy_version"] == "1.0.0"
-    assert document["manifest"]["models"]["audio"] == "deterministic-speech-v1"
+    # Keyed by role now. `audio` could hold one model; the scripted runtime
+    # plays recogniser, detector and prosody estimator and all three are
+    # recorded, which a modality-keyed manifest collapsed into one entry.
+    assert document["manifest"]["models"]["recogniser"] == "deterministic-speech-v1"
+    assert document["manifest"]["models"]["visual_estimator"] == "deterministic-vision-v1"
 
     # 4. Delete -----------------------------------------------------------
     deleted = client.delete(f"/v1/sessions/{session_id}/evidence", headers=auth)

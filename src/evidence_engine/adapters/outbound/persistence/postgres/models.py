@@ -186,6 +186,9 @@ class ProcessingRunRow(Base):
     completed_at_ms: Mapped[int | None] = mapped_column(BigInteger)
     #: NFR-019: an interrupted batch job resumes from completed stages.
     completed_stages: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: Role -> model version wired when the run opened. What was *running*,
+    #: as opposed to the document manifest's what *contributed*.
+    models: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class WordTokenRow(Base):
@@ -220,6 +223,17 @@ class WordTokenRow(Base):
     calibration: Mapped[str | None] = mapped_column(String(16))
     confidence_unavailable_reason: Mapped[str | None] = mapped_column(String(64))
     confidence_unavailable_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: The recogniser's provenance, on every word. Tokens were the only
+    #: evidence with no provenance columns, which is why a document with
+    #: five recognised words and no disfluency recorded no model at all.
+    #: No `role` column: a token is the recogniser's by construction and
+    #: the domain constructor refuses any other.
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
     __table_args__ = (
@@ -273,6 +287,7 @@ class SpeechEventRow(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     calibration: Mapped[str] = mapped_column(String(16), nullable=False)
     is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -319,6 +334,7 @@ class VisualEventRow(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     calibration: Mapped[str] = mapped_column(String(16), nullable=False)
     is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -359,6 +375,17 @@ class ProsodyReadingRow(Base):
     calibration: Mapped[str | None] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(40))
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Provenance on every reading. Readings used to inherit the run's audio
+    #: provenance from whichever speech event happened to exist, and when none
+    #: did the repository fabricated `ModelVersionId("unknown")`. A prosody
+    #: estimator is its own model; its version is recorded where its output is.
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    configuration_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    seed_reason: Mapped[str | None] = mapped_column(String(40))
 
     __table_args__ = (
         CheckConstraint(
@@ -507,7 +534,9 @@ class ModelVersionRow(Base):
     __tablename__ = "model_version"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    modality: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: The component this artifact fills. Was `modality`, which allowed one
+    #: active audio model and could not express the canary QA-03 requires.
+    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     artifact_digest: Mapped[str] = mapped_column(String(128), nullable=False)
     dataset_version: Mapped[str] = mapped_column(String(64), nullable=False)
     approval: Mapped[str] = mapped_column(String(24), nullable=False)
@@ -516,11 +545,11 @@ class ModelVersionRow(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
-        # One active version per modality. Two would make provenance ambiguous
+        # One active version per role. Two would make provenance ambiguous
         # for every event produced while both were live.
         Index(
-            "uq_model_active_per_modality",
-            "modality",
+            "uq_model_active_per_role",
+            "role",
             unique=True,
             postgresql_where=is_active.is_(True),
         ),
